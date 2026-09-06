@@ -2732,7 +2732,7 @@ function renderConversion() {
 
   panel.innerHTML = `
     <div class="section-title">Conversion</div>
-    <div class="section-sub">Active + Archive combined. Date range filters by Due Date (the closest proxy available to a true quote-creation date in this pull). Real conversion is thin right now: only ${wonQuoteNos.size} of ${totalQuoteNos.size} tracked quotes have a confirmed Won outcome in Business Central. Debugged and confirmed against real revenue for the same accounts, same time window (since the ERP upgrade to the current SQIE quote numbering, April 2026): $9.34M in actual revenue vs. $30,609.74 in confirmed Won quotes \u2014 0.33%. See Data Quality for the full breakdown, including an earlier version of this comparison that was corrected.</div>
+    <div class="section-sub">Active + Archive combined. Date range filters by Due Date (the closest proxy available to a true quote-creation date in this pull). Real conversion is thin right now: only ${wonQuoteNos.size} of ${totalQuoteNos.size} tracked quotes have a confirmed Won outcome in Business Central (current-system SQIE quotes total $42,715.06 confirmed Won as of this 2026-09-06 refresh, vs. $30,609.74 a month earlier \u2014 see Data Quality for the full breakdown, including an earlier version of this comparison that was corrected).</div>
     <div style="display:flex;gap:16px;align-items:center;margin-bottom:14px;flex-wrap:wrap;background:var(--cream);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
       <span style="font-size:12px;font-weight:600;color:var(--text-muted)">DATE RANGE (Due Date):</span>
       <label style="font-size:12px;color:var(--text-muted)">From <input type="date" id="conv-date-from" value="${conversionDateFilter.from}" style="margin-left:4px"/></label>
@@ -2805,7 +2805,7 @@ function renderArchive() {
 
   panel.innerHTML = `
     <div class="section-title">Archive</div>
-    <div class="section-sub">Won business for the team's accounts, combining the current system's confirmed conversions (3 quotes, cross-checked against status/order/invoice) with legacy pre-upgrade business that's still invoicing against old "SQ"-numbered quotes. The legacy volume ($1.06M since April 2026) is why the current system's $30,609.74 looks so small on its own \u2014 most of what's actually closing right now is backlog from before the upgrade, not evidence the new quote process is failing.</div>
+    <div class="section-sub">Won business for the team's accounts, combining the current system's confirmed conversions (6 quotes, cross-checked against status/order/invoice) with legacy pre-upgrade business that's still invoicing against old "SQ"-numbered quotes. The legacy volume ($1.96M since April 2026, across 510 invoices) is why the current system's $42,715.06 looks so small on its own \u2014 most of what's actually closing right now is backlog from before the upgrade, not evidence the new quote process is failing.</div>
     <div style="display:flex;gap:16px;align-items:center;margin-bottom:14px;flex-wrap:wrap;background:var(--cream);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
       <span style="font-size:12px;font-weight:600;color:var(--text-muted)">DATE RANGE:</span>
       <label style="font-size:12px;color:var(--text-muted)">From <input type="date" id="archive-date-from" value="${archiveDateFilter.from}" style="margin-left:4px"/></label>
