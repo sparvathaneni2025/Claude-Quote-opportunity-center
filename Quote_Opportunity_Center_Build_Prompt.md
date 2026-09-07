@@ -83,6 +83,14 @@ Source: uploaded `Pro_active_Sales_Accounts_Effective_July_2026.xlsx`. Columns: 
 - **BC was recently upgraded**, changing quote numbering from an old "SQ" prefix to the current "SQIE" prefix (same business, same accounts, ~April 2026 cutover). A large, ongoing volume of real revenue (**$1,059,243.50** confirmed since April 2026, still posting as of early August) is legacy pre-upgrade business finishing its lifecycle against old "SQ" quote numbers — this is why the current system's own Won total ($30,609.74) looks tiny in isolation. Keep these two populations visually distinct (Archive's "System" column: Current vs. Legacy) rather than merging them into one number.
 - **The 2,000-row query cap is the single most dangerous failure mode in this build.** It silently drops data rather than erroring, and it looks identical to "there's genuinely nothing there." Always filter tightly (by account list, by status, by amount threshold) rather than pulling broadly and filtering client-side.
 
+**Re-verified 2026-09-07 (all findings above still hold; new evidence found this pass):**
+- Every one of the 27 currently-open $5K+ quotes with a `lostCode` set also has a **blank `reasonCode`** — 27 of 27, all four reps. Not just occasionally unused; the field isn't populated at all when a quote is marked at-risk.
+- The "lostCode set but status never closes" pattern now also confirmed on `Pending Approval` (SQIE0015681, Lockheed Martin, $954,912, lostCode `PROJ-CX`) — not just Quote Issued/WIP as originally documented.
+- The SalesModel customer-number collision problem is wider than the single C132371/C129074 example first documented: nine confirmed collisions now (C132371, C129074, C151561, C106540, C108736, C151758, C165450, C148170, C157166), each pairing a live current account against an unrelated dormant record (2008–2021) on the exact same `CustomerNumber`.
+- A funnel-tracking wrinkle: a fully-invoiced order can disappear entirely from a fresh `salesOrders` pull (confirmed on SQIE0025898/Epirus — invoiced per the `invoices` entity, but its order no longer shows up in `salesOrders`). Checking `salesOrders.shipped` alone, without also checking `invoices`, will wrongly read a completed sale as unshipped.
+- Legacy "SQ"-numbered Won business is still posting: 20 new invoices totaling $153,991.89 landed between the 2026-08-04 and 2026-09-04 snapshots. Running legacy total against the team's accounts is now ≈$1.21M since the ~April 2026 upgrade, against $42,715.06 in confirmed current-system (SQIE) Won — still small, consistent with the original finding.
+- One quote (SQIE0029470, Anduril Industries, $2,519,335) is a ~40x outlier vs. the median quote size this pull — real record with real line detail, but worth a human sanity check before working it like a normal pipeline item.
+
 ---
 
 ## 6. Data model (JS arrays embedded in the artifact)
@@ -118,8 +126,11 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** — rows where `lostCode` is populated, pulled with the same per-rep method as Section 4 (never a broad pull). Columns: quote number, customer, owner, quote total, lost code, reason code, status. `status` still shows Quote Issued/WIP/Pending Approval — a known BC limitation (see Section 5), not a bug in this view. Rows where `lostCode` is set but `reasonCode` is blank (or vice versa) are flagged and sorted first, then by quote total descending.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
+
+**Interactive filters (My Quote Queue, Rep View, Manager View, Lost Quotes):** every KPI/summary count and every inline flag badge is a clickable filter — clicking it filters the table/list to only matching rows; clicking the same one again toggles it off. One quick-filter active at a time (v1) — it composes with the existing Quote Type/Classification/Customer dropdowns on Queue/Rep View, but only one quick-filter key is active at once. A "Showing: <Label> (<n>)" indicator with a clear/× link appears whenever a quick-filter is active.
 
 ---
 
