@@ -93,6 +93,7 @@ QUOTES = [{
   followUpDate, followUpCode, followUpSalesperson, dueDate, expirationDate,
   quoteTotal, lastOrderDate, daysSinceLastOrder, classification, // customer-level classification, fallback
   moreLinesValue, // $ gap between quoteTotal and sum of displayed lines (freight, excluded lines, truncation)
+  reasonCode, lostCode, // carried through from salesQuotes for the Lost Quotes view
   lines: [{ lineNo, item, desc, qty, unitPrice, lineAmount, stock,
             itemClassification, itemDaysSince, itemLastOrderDate }] // item-level classification where available
 }]
@@ -102,11 +103,15 @@ ARCHIVE = [{ ...same shape as QUOTES entries, plus: outcome:"Won", orderNo, orde
 LEGACY_WON = [{ quoteNo, invoiceNo, customer, custNo, owner, amount, documentDate }] // no line detail, header-level only
 
 ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to compute zero-activity accounts
+
+LOST_QUOTES = [{ quoteNo, customer, custNo, owner, quoteTotal, lostCode, reasonCode, status }] // quote-level, lostCode populated; see Section 7 view 10
 ```
 
 ---
 
 ## 7. Views built (tabs)
+
+On top of the dropdown filters described below, the four flag-related KPI tiles in My Quote Queue/Rep View, the per-rep Overdue/Missing Follow-Up badges in Manager View's team rollup table, and the "Flagged" KPI in Lost Quotes are all click-to-filter: clicking one narrows the list below to just that flag category (AND'd with any dropdown filters already active), shows a "Showing: X (n)" indicator with a clear/× control, and clicking the same tile again (or the clear control) restores the unfiltered view — only one quick-filter is active at a time per table (v1 constraint).
 
 1. **My Quote Queue** — all active $5K+ lines, team-wide. Filterable by Quote Type (Bid/Buy/Not set), Classification, Customer. Columns include Stock (flagged red at zero). Flags: Overdue, Due Today, Missing Follow-Up (date/code/salesperson), Expiring ≤5 days, Owner≠BC Salesperson, Missing Bid/Buy.
 2. **Rep View** — same table, scoped to one rep via a dropdown, own KPIs.
@@ -117,7 +122,8 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 7. **Customers** — high-activity (top 20%) / low-activity (bottom 20%, has ≥1 quote) / **zero-activity (no quotes at all — a distinct, more important category)** / full sortable-by-conversion table.
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
-10. **Roadmap** — what's built vs. genuinely still open.
+10. **Lost Quotes** — quote-level (not line-level) rows where BC's `lostCode` field is populated, pulled from the same per-rep active-quote pull. Columns: Quote Number, Customer, Owner, Quote Total, Lost Code, Reason Code, Status. A row is "flagged" when `lostCode` is set but `reasonCode` is blank, or vice versa — sorted flagged-first, then by quote total descending. Callout that Status will show Quote Issued/WIP for all of these (see Section 5/Data Quality — quotes with a lostCode are never formally closed in BC).
+11. **Roadmap** — what's built vs. genuinely still open.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
 
