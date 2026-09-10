@@ -50,6 +50,12 @@
   .roadmap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px,1fr)); gap: 12px; }
   .roadmap-card { border: 1px dashed var(--border); border-radius: 10px; padding: 14px; color: var(--text-muted); font-size: 12px; background: var(--cream); }
   .roadmap-card b { display: block; color: var(--nav); font-size: 13px; margin-bottom: 4px; }
+  .qf-kpi:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .qf-kpi.qf-active { background: var(--accent); }
+  .qf-kpi.qf-active .val, .qf-kpi.qf-active .lbl { color: #fff; }
+  .qf-indicator { display: inline-flex; align-items: center; gap: 8px; background: var(--nav); color: #fff; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 8px; margin-bottom: 12px; }
+  .qf-indicator a { color: #fff; text-decoration: none; font-weight: 700; }
+  .flag.qf-clickable { cursor: pointer; }
   .save-status { font-size: 11px; color: var(--green); margin-left: 8px; }
   .refresh-btn { background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 12px; font-weight: 600; cursor: pointer; }
   .snapshot-note { font-size: 11px; color: var(--text-muted); background: var(--cream); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-bottom: 16px; }
@@ -65,6 +71,7 @@
     <button class="qoc-tab" data-tab="conversion">Conversion</button>
     <button class="qoc-tab" data-tab="customers">Customers</button>
     <button class="qoc-tab" data-tab="manager">Manager View</button>
+    <button class="qoc-tab" data-tab="lost">Lost Quotes</button>
     <button class="qoc-tab" data-tab="dq">Data Quality</button>
     <button class="qoc-tab" data-tab="archive">Archive</button>
     <button class="qoc-tab" data-tab="roadmap">Roadmap</button>
@@ -77,6 +84,7 @@
     <div id="panel-norewin" style="display:none"></div>
     <div id="panel-conversion" style="display:none"></div>
     <div id="panel-manager" style="display:none"></div>
+    <div id="panel-lost" style="display:none"></div>
     <div id="panel-customers" style="display:none"></div>
     <div id="panel-dq" style="display:none"></div>
     <div id="panel-archive" style="display:none"></div>
@@ -1706,22 +1714,30 @@ function fmt$(n) { return "$" + Number(n).toLocaleString(undefined, {minimumFrac
 
 function computeFlags(q, edit) {
   const flags = [];
-  if (!q.followUpDate) { flags.push({label: "Missing Follow-Up Date", cls: "missing"}); }
+  if (!q.followUpDate) { flags.push({label: "Missing Follow-Up Date", cls: "missing", key: "missingFUDate"}); }
   else {
     const fu = daysBetween(q.followUpDate);
-    if (fu < 0) flags.push({label: "Overdue " + Math.abs(fu) + "d", cls: "overdue"});
-    else if (fu === 0) flags.push({label: "Due today", cls: "today"});
+    if (fu < 0) flags.push({label: "Overdue " + Math.abs(fu) + "d", cls: "overdue", key: "overdue"});
+    else if (fu === 0) flags.push({label: "Due today", cls: "today", key: "today"});
   }
-  if (!q.followUpCode) flags.push({label: "Missing Follow-Up Code", cls: "missing"});
-  if (!q.followUpSalesperson) flags.push({label: "Missing Follow-Up Rep", cls: "missing"});
+  if (!q.followUpCode) flags.push({label: "Missing Follow-Up Code", cls: "missing", key: "missingFUCode"});
+  if (!q.followUpSalesperson) flags.push({label: "Missing Follow-Up Rep", cls: "missing", key: "missingFURep"});
   const exp = daysBetween(q.expirationDate);
-  if (exp >= 0 && exp <= 5) flags.push({label: "Expires in " + exp + "d", cls: "today"});
+  if (exp >= 0 && exp <= 5) flags.push({label: "Expires in " + exp + "d", cls: "today", key: "expiring"});
   if (normalizeOwner(q.owner) !== q.bcSalesperson) {
-    flags.push({label: "Owner \u2260 BC Salesperson", cls: "missing"});
+    flags.push({label: "Owner \u2260 BC Salesperson", cls: "missing", key: "ownerMismatch"});
   }
-  if (edit && !edit.quoteType) flags.push({label: "Missing Bid/Buy", cls: "missing"});
+  if (edit && !edit.quoteType) flags.push({label: "Missing Bid/Buy", cls: "missing", key: "missingBidBuy"});
   return flags;
 }
+// Quick-filter definitions shared by clickable KPI tiles and inline flag badges (interactive filters, v1: one active filter per view).
+const QUICK_FILTER_LABELS = {
+  overdue: "Overdue", today: "Due Today", missingFUDate: "Missing Follow-Up",
+  expiring: "Expiring \u22645 days", missingFUCode: "Missing Follow-Up Code",
+  missingFURep: "Missing Follow-Up Rep", ownerMismatch: "Owner \u2260 BC Salesperson",
+  missingBidBuy: "Missing Bid/Buy", lostMissingReason: "Lost \u2014 missing lostCode/reasonCode"
+};
+function rowHasFlagKey(flags, key) { return flags.some(f => f.key === key); }
 function normalizeOwner(owner) {
   const map = {"Adam Purcell":"APURCELL","Kelli Jones":"KJONES","Jerik Wong":"JWONG","Spencer Doty":"SDOTY"};
   return map[owner] || owner;
@@ -1744,7 +1760,7 @@ const tableFilters = {}; // containerId -> { quoteType: 'All', classification: '
 
 function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   const panel = document.getElementById(containerId);
-  if (!tableFilters[containerId]) tableFilters[containerId] = { quoteType: 'All', classification: 'All', customer: 'All' };
+  if (!tableFilters[containerId]) tableFilters[containerId] = { quoteType: 'All', classification: 'All', customer: 'All', quick: null };
   const filt = tableFilters[containerId];
 
   let rows = [];
@@ -1765,6 +1781,14 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   if (filt.customer !== 'All') {
     rows = rows.filter(({q}) => q.custNo === filt.customer);
   }
+  if (filt.quick) {
+    rows = rows.filter(({flags}) => rowHasFlagKey(flags, filt.quick));
+  }
+
+  function setQuickFilter(key) {
+    tableFilters[containerId].quick = (tableFilters[containerId].quick === key) ? null : key;
+    renderQuoteTable(containerId, quoteList, titleHtml, subHtml);
+  }
 
   const customerOptions = [...new Map(quoteList.map(q => [q.custNo, q.customer])).entries()]
     .sort((a,b) => a[1].localeCompare(b[1]));
@@ -1783,14 +1807,15 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
     ${titleHtml}
     ${subHtml}
     <div class="qoc-kpis">
-      <div class="kpi ${overdueCount?'warn':''}"><div class="val">${overdueCount}</div><div class="lbl">Overdue follow-up</div></div>
-      <div class="kpi ${todayCount?'warn':''}"><div class="val">${todayCount}</div><div class="lbl">Due today</div></div>
-      <div class="kpi ${missingFUCount?'warn':''}"><div class="val">${missingFUCount}</div><div class="lbl">Missing follow-up</div></div>
-      <div class="kpi ${expiringCount?'warn':''}"><div class="val">${expiringCount}</div><div class="lbl">Expiring &le;5 days</div></div>
+      <div class="kpi qf-kpi ${overdueCount?'warn':''} ${filt.quick==='overdue'?'qf-active':''}" data-quick="overdue" style="cursor:pointer"><div class="val">${overdueCount}</div><div class="lbl">Overdue follow-up</div></div>
+      <div class="kpi qf-kpi ${todayCount?'warn':''} ${filt.quick==='today'?'qf-active':''}" data-quick="today" style="cursor:pointer"><div class="val">${todayCount}</div><div class="lbl">Due today</div></div>
+      <div class="kpi qf-kpi ${missingFUCount?'warn':''} ${filt.quick==='missingFUDate'?'qf-active':''}" data-quick="missingFUDate" style="cursor:pointer"><div class="val">${missingFUCount}</div><div class="lbl">Missing follow-up</div></div>
+      <div class="kpi qf-kpi ${expiringCount?'warn':''} ${filt.quick==='expiring'?'qf-active':''}" data-quick="expiring" style="cursor:pointer"><div class="val">${expiringCount}</div><div class="lbl">Expiring &le;5 days</div></div>
       <div class="kpi"><div class="val">${fmt$(totalValue)}</div><div class="lbl">Active quote value</div></div>
       <div class="kpi"><div class="val">${quoteList.length}</div><div class="lbl">Quotes ($5K+)</div></div>
       <div class="kpi"><div class="val">${rows.length}</div><div class="lbl">Lines shown</div></div>
     </div>
+    ${filt.quick ? `<div class="qf-indicator">Showing: ${QUICK_FILTER_LABELS[filt.quick]} (${rows.length}) <a href="#" id="${containerId}-quick-clear" title="Clear filter">&times;</a></div>` : ''}
     <div style="display:flex;gap:16px;align-items:center;margin-bottom:12px;flex-wrap:wrap;background:var(--cream);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
       <span style="font-size:12px;font-weight:600;color:var(--text-muted)">FILTER:</span>
       <label style="font-size:12px;color:var(--text-muted)">Quote Type
@@ -1842,9 +1867,14 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   const clearBtn = document.getElementById(containerId+'-filter-clear');
   if (clearBtn) clearBtn.addEventListener('click', (e) => {
     e.preventDefault();
-    tableFilters[containerId] = { quoteType: 'All', classification: 'All', customer: 'All' };
+    tableFilters[containerId] = { quoteType: 'All', classification: 'All', customer: 'All', quick: null };
     renderQuoteTable(containerId, quoteList, titleHtml, subHtml);
   });
+  panel.querySelectorAll('.qf-kpi').forEach(el => {
+    el.addEventListener('click', () => setQuickFilter(el.dataset.quick));
+  });
+  const quickClear = document.getElementById(containerId+'-quick-clear');
+  if (quickClear) quickClear.addEventListener('click', (e) => { e.preventDefault(); setQuickFilter(filt.quick); });
 
   const tbody = document.getElementById(containerId+'-tbody');
   if (!rows.length) {
@@ -1855,7 +1885,7 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><button class="drill-btn" data-quote="${q.quoteNo}" data-line="${l.lineNo}" title="View quote detail" style="background:var(--cream);border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:4px 8px;font-size:12px;">&#8599;</button></td>
-      <td>${flags.map(f=>`<span class="flag ${f.cls}">${f.label}</span><br/>`).join('') || '<span class="flag ok">On track</span>'}</td>
+      <td>${flags.map(f=>`<span class="flag ${f.cls} qf-clickable" data-quickkey="${f.key}" title="Click to filter">${f.label}</span><br/>`).join('') || '<span class="flag ok">On track</span>'}</td>
       <td><a href="#" class="customer-link" data-custno="${q.custNo}" style="color:var(--nav);font-weight:700;text-decoration:underline;cursor:pointer">${q.customer}</a><br/><span style="color:var(--text-muted);font-size:11px">${q.custNo}</span></td>
       <td><a href="#" class="quote-link" data-quote="${q.quoteNo}" data-line="${l.lineNo}" style="color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer">${q.quoteNo}</a><br/><span style="color:var(--text-muted);font-size:11px">Line ${l.lineNo} &middot; ${q.status}</span></td>
       <td>${l.item}<br/><span style="color:var(--text-muted);font-size:11px">${l.desc}</span></td>
@@ -1892,6 +1922,9 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   });
   tbody.querySelectorAll('.customer-link').forEach(a => {
     a.addEventListener('click', (e) => { e.preventDefault(); openCustomerDetail(a.dataset.custno); });
+  });
+  tbody.querySelectorAll('.qf-clickable').forEach(el => {
+    el.addEventListener('click', () => setQuickFilter(el.dataset.quickkey));
   });
 }
 
@@ -2378,6 +2411,12 @@ document.getElementById('qoc-modal-backdrop').addEventListener('click', (e) => {
   if (e.target.id === 'qoc-modal-backdrop') closeDetail();
 });
 
+let managerQuickFilter = null; // { owner?: string, key?: string, label: string } — one active filter at a time
+function setManagerQuickFilter(next) {
+  const same = managerQuickFilter && next && managerQuickFilter.owner === next.owner && managerQuickFilter.key === next.key;
+  managerQuickFilter = same ? null : next;
+  renderManager();
+}
 function renderManager() {
   const panel = document.getElementById('panel-manager');
   const byOwner = {};
@@ -2401,7 +2440,15 @@ function renderManager() {
   }));
   const rank = f => f.some(x=>x.cls==='overdue') ? 0 : f.some(x=>x.cls==='today') ? 1 : f.some(x=>x.cls==='missing') ? 2 : 3;
   queueRows.sort((a,b) => rank(a.flags)-rank(b.flags) || b.l.lineAmount-a.l.lineAmount);
-  const topQueue = queueRows.slice(0, 15);
+
+  let shownQueue = queueRows;
+  if (managerQuickFilter) {
+    shownQueue = queueRows.filter(({q,flags}) =>
+      (!managerQuickFilter.owner || q.owner === managerQuickFilter.owner) &&
+      (!managerQuickFilter.key || rowHasFlagKey(flags, managerQuickFilter.key))
+    );
+  }
+  const topQueue = managerQuickFilter ? shownQueue : shownQueue.slice(0, 15);
 
   panel.innerHTML = `
     <div class="section-title">Manager View</div>
@@ -2409,11 +2456,12 @@ function renderManager() {
     <div class="card">
       <b style="font-size:13px">Team rollup by rep</b>
       <table style="margin-top:10px"><thead><tr><th>Rep</th><th>$5K+ Quotes</th><th>Active Value</th><th>Overdue</th><th>Missing Follow-Up</th><th>Zero-Activity Accounts</th></tr></thead>
-      <tbody>${repRows.map(([owner,d])=>`<tr><td>${owner}</td><td>${d.count}</td><td>${fmt$(d.value)}</td><td>${d.overdue ? '<span class="flag overdue">'+d.overdue+'</span>' : '0'}</td><td>${d.missingFU ? '<span class="flag missing">'+d.missingFU+'</span>' : '0'}</td><td>${d.zeroActivity || 0}</td></tr>`).join('')}</tbody></table>
+      <tbody>${repRows.map(([owner,d])=>`<tr><td>${owner}</td><td>${d.count}</td><td>${fmt$(d.value)}</td><td>${d.overdue ? `<span class="flag overdue qf-clickable" data-owner="${owner}" data-quickkey="overdue" title="Click to filter coaching queue">${d.overdue}</span>` : '0'}</td><td>${d.missingFU ? `<span class="flag missing qf-clickable" data-owner="${owner}" data-quickkey="missingFUDate" title="Click to filter coaching queue">${d.missingFU}</span>` : '0'}</td><td>${d.zeroActivity || 0}</td></tr>`).join('')}</tbody></table>
     </div>
     <div class="card">
-      <b style="font-size:13px">Coaching queue &mdash; exceptions only, highest dollar value first (top 15 of ${queueRows.length})</b>
+      <b style="font-size:13px">Coaching queue &mdash; exceptions only, highest dollar value first ${managerQuickFilter ? `(${shownQueue.length} matching filter)` : `(top 15 of ${queueRows.length})`}</b>
       <div class="section-sub" style="margin-top:4px">The 5 Manager Review questions: (1) Is this a Bid or a Buy, and what's the evidence? (2) How will the customer decide who wins? (3) What supports the pricing or discount being asked? (4) What's the story and value proposition? (5) What's the next action, by when, and what outcome are we trying to achieve?</div>
+      ${managerQuickFilter ? `<div class="qf-indicator" style="margin-top:8px">Showing: ${managerQuickFilter.owner ? managerQuickFilter.owner+' — ' : ''}${QUICK_FILTER_LABELS[managerQuickFilter.key] || 'All flags'} (${shownQueue.length}) <a href="#" id="mgr-quick-clear" title="Clear filter">&times;</a></div>` : ''}
       ${topQueue.map(({q,l,flags}) => `
         <div style="border-top:1px solid var(--border);padding:10px 0;display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
           <div>
@@ -2421,13 +2469,75 @@ function renderManager() {
             &mdash; ${q.quoteNo} &mdash; ${fmt$(l.lineAmount)} (${l.item}) &mdash; ${q.owner}<br/>
             <span style="font-size:12px;color:var(--text-muted)">Follow-up: ${q.followUpDate || 'none set'} (${q.followUpCode||'no code'}) &middot; Classification: ${l.itemClassification} &middot; Quote Type: ${getEdit(lineKey(q,l)).quoteType || 'not set'}</span>
           </div>
-          <div style="text-align:right;white-space:nowrap">${flags.map(f=>`<span class="flag ${f.cls}">${f.label}</span>`).join(' ')}</div>
+          <div style="text-align:right;white-space:nowrap">${flags.map(f=>`<span class="flag ${f.cls} qf-clickable" data-quickkey="${f.key}" title="Click to filter coaching queue">${f.label}</span>`).join(' ')}</div>
         </div>`).join('')}
     </div>
   `;
   panel.querySelectorAll('.mgr-quote-link').forEach(a => {
     a.addEventListener('click', (e) => { e.preventDefault(); openDetail(a.dataset.quote, Number(a.dataset.line)); });
   });
+  panel.querySelectorAll('.qf-clickable').forEach(el => {
+    el.addEventListener('click', () => setManagerQuickFilter({ owner: el.dataset.owner || null, key: el.dataset.quickkey, label: el.textContent }));
+  });
+  const mgrClear = document.getElementById('mgr-quick-clear');
+  if (mgrClear) mgrClear.addEventListener('click', (e) => { e.preventDefault(); managerQuickFilter = null; renderManager(); });
+}
+
+let lostQuickFilter = null; // 'flagged' | null — one active filter at a time
+function renderLost() {
+  const panel = document.getElementById('panel-lost');
+  // Same per-rep pull as the active queue (Section 4) — quotes with a lostCode still show status
+  // Quote Issued/WIP (known BC limitation: lost quotes are never formally closed, see Data Quality).
+  let rows = QUOTES.filter(q => q.lostCode || q.reasonCode);
+  rows.forEach(q => { q._flagged = (!!q.lostCode) !== (!!q.reasonCode); });
+  const flaggedCount = rows.filter(q => q._flagged).length;
+
+  let shown = rows;
+  if (lostQuickFilter === 'flagged') shown = rows.filter(q => q._flagged);
+  shown = shown.slice().sort((a,b) => (b._flagged - a._flagged) || (b.quoteTotal - a.quoteTotal));
+
+  const totalValue = rows.reduce((s,q)=>s+q.quoteTotal,0);
+  const byLostCode = {};
+  rows.forEach(q => { const k = q.lostCode || '(blank)'; byLostCode[k] = (byLostCode[k]||0) + 1; });
+
+  panel.innerHTML = `
+    <div class="section-title">Lost Quotes</div>
+    <div class="section-sub">Quotes where Business Central's lostCode and/or reasonCode fields are populated, pulled per-rep the same way as the active queue. <b>Status will still show Quote Issued/WIP</b> for these &mdash; a known BC limitation, not a data error (see Data Quality): lost quotes are never formally closed out in BC.</div>
+    <div class="qoc-kpis">
+      <div class="kpi"><div class="val">${rows.length}</div><div class="lbl">Lost-tagged quotes</div></div>
+      <div class="kpi"><div class="val">${fmt$(totalValue)}</div><div class="lbl">Total value</div></div>
+      <div class="kpi qf-kpi ${flaggedCount?'warn':''} ${lostQuickFilter==='flagged'?'qf-active':''}" data-quick="flagged" style="cursor:pointer"><div class="val">${flaggedCount}</div><div class="lbl">Missing lostCode or reasonCode</div></div>
+      <div class="kpi"><div class="val">${Object.keys(byLostCode).length}</div><div class="lbl">Distinct lost codes</div></div>
+    </div>
+    ${lostQuickFilter ? `<div class="qf-indicator">Showing: ${QUICK_FILTER_LABELS.lostMissingReason} (${shown.length}) <a href="#" id="lost-quick-clear" title="Clear filter">&times;</a></div>` : ''}
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th></th><th>Flag</th><th>Quote #</th><th>Customer</th><th>Owner</th><th>Quote Total</th><th>Lost Code</th><th>Reason Code</th><th>Status</th></tr></thead>
+      <tbody>
+        ${shown.length ? shown.map(q => `<tr>
+          <td><button class="drill-btn" data-quote="${q.quoteNo}" data-line="${q.lines[0] ? q.lines[0].lineNo : ''}" title="View quote detail" style="background:var(--cream);border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:4px 8px;font-size:12px;">&#8599;</button></td>
+          <td>${q._flagged ? `<span class="flag missing qf-clickable" data-quickkey="flagged" title="Click to filter">${!q.lostCode ? 'Missing lostCode' : 'Missing reasonCode'}</span>` : '<span class="flag ok">Both set</span>'}</td>
+          <td><a href="#" class="quote-link" data-quote="${q.quoteNo}" data-line="${q.lines[0] ? q.lines[0].lineNo : ''}" style="color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer">${q.quoteNo}</a></td>
+          <td><a href="#" class="customer-link" data-custno="${q.custNo}" style="color:var(--nav);font-weight:700;text-decoration:underline;cursor:pointer">${q.customer}</a></td>
+          <td>${q.owner}</td>
+          <td>${fmt$(q.quoteTotal)}</td>
+          <td>${q.lostCode || '<span style="color:var(--red)">blank</span>'}</td>
+          <td>${q.reasonCode || '<span style="color:var(--red)">blank</span>'}</td>
+          <td>${q.status}</td>
+        </tr>`).join('') : `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:20px">No lost-tagged quotes match this filter.</td></tr>`}
+      </tbody>
+    </table></div>
+  `;
+  panel.querySelectorAll('.drill-btn, .quote-link').forEach(el => {
+    el.addEventListener('click', (e) => { e.preventDefault(); openDetail(el.dataset.quote, Number(el.dataset.line) || null); });
+  });
+  panel.querySelectorAll('.customer-link').forEach(a => {
+    a.addEventListener('click', (e) => { e.preventDefault(); openCustomerDetail(a.dataset.custno); });
+  });
+  panel.querySelectorAll('.qf-kpi, .qf-clickable').forEach(el => {
+    el.addEventListener('click', () => { lostQuickFilter = (lostQuickFilter === el.dataset.quick || lostQuickFilter === el.dataset.quickkey) ? null : (el.dataset.quick || el.dataset.quickkey); renderLost(); });
+  });
+  const lostClear = document.getElementById('lost-quick-clear');
+  if (lostClear) lostClear.addEventListener('click', (e) => { e.preventDefault(); lostQuickFilter = null; renderLost(); });
 }
 
 function renderCustomers() {
@@ -2540,11 +2650,11 @@ function renderRoadmap() {
   const panel = document.getElementById('panel-roadmap');
   panel.innerHTML = `
     <div class="section-title">Roadmap</div>
-    <div class="section-sub">Built so far: Queue, Rep View, filters (Quote Type, Classification, Customer), Stock, quote-line drill-down, customer drill-down, item-level classification, Winback, Repeated No-Win, Conversion with date range and rep leaderboard, Customers (including zero-activity accounts), exception-based Manager coaching queue, QUOTE+VALUE coaching panel, Archive, Data Quality.</div>
+    <div class="section-sub">Built so far: Queue, Rep View, filters (Quote Type, Classification, Customer) plus clickable KPI/flag quick-filters (Queue, Rep View, Manager View, Lost Quotes), Stock, quote-line drill-down, customer drill-down, item-level classification, Winback, Repeated No-Win, Conversion with date range and rep leaderboard, Customers (including zero-activity accounts), exception-based Manager coaching queue, QUOTE+VALUE coaching panel, Lost Quotes (lostCode/reasonCode tracking), Archive, Data Quality.</div>
     <div class="roadmap-grid">
       <div class="roadmap-card"><b>Broader Repeated No-Win detection</b>Currently limited to what's visible across active quotes in this snapshot; a full historical quote log would catch more genuine repeat-and-lose patterns.</div>
-      <div class="roadmap-card"><b>Real Lost tracking</b>Needs a BC process change (closing quotes as Lost) \u2014 covered in the separate instructional document, not something this app can fix on its own.</div>
-      <div class="roadmap-card"><b>Full item-level classification on all 69 supplementary quotes</b>Currently customer-level fallback for these; a real fix needs the ItemKey/ItemNumber join issue resolved in SalesModel.</div>
+      <div class="roadmap-card"><b>Real Lost tracking</b>The Lost Quotes tab surfaces every quote tagged with a lostCode/reasonCode, but BC still never formally closes them \u2014 a true Lost-outcome conversion rate needs a BC process change (covered in the separate instructional document), not something this app can compute on its own.</div>
+      <div class="roadmap-card"><b>Full item-level classification on all supplementary quotes</b>Currently customer-level fallback for quotes outside the original item-level pull; a real fix needs the ItemKey/ItemNumber join issue resolved in SalesModel.</div>
     </div>
   `;
 }
@@ -2553,7 +2663,7 @@ document.querySelectorAll('.qoc-tab').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.qoc-tab').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
-    ['queue','reps','winback','norewin','conversion','manager','customers','dq','archive','roadmap'].forEach(t => {
+    ['queue','reps','winback','norewin','conversion','manager','lost','customers','dq','archive','roadmap'].forEach(t => {
       document.getElementById('panel-'+t).style.display = (t === btn.dataset.tab) ? 'block' : 'none';
     });
   });
@@ -2571,6 +2681,7 @@ document.getElementById('snapshot-note').innerHTML =
   renderNoRewin();
   renderConversion();
   renderManager();
+  renderLost();
   renderCustomers();
   renderDQ();
   renderArchive();
