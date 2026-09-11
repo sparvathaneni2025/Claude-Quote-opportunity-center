@@ -1,5 +1,5 @@
 # Infinite Electronics — Quote Opportunity Center
-## Build Specification / Prompt (v1, reflects the actual built-and-verified app)
+## Build Specification / Prompt (v1, reflects the actual built-and-verified app; data refreshed 2026-09-11 — added Lost Quotes tab and interactive KPI/flag filters, see Sections 5 and 7)
 
 Use this document as a prompt to Claude (or a spec for any developer) to reconstruct, refresh, or continue building this dashboard. Everything in here reflects what was actually verified against live Business Central and SalesModel data — not assumptions. Where something is a known limitation rather than a fact, it's labeled as such.
 
@@ -118,8 +118,11 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** *(added 2026-09-11 refresh)* — every active quote with a `lostCode` set, pulled the same per-rep way as Section 4. Columns: quote number, customer, owner, quoteTotal, lostCode, reasonCode, status (still shows Quote Issued/WIP — expected, see Section 5). Flags rows where `lostCode` is set but `reasonCode` is blank, or vice versa; sorted flagged-first then quoteTotal descending. KPI row: total lost-quote count, total value, count of flagged rows.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
+
+**Interactive filters** *(added 2026-09-11 refresh)* — in My Quote Queue, Rep View, Manager View, and Lost Quotes, clicking a KPI tile or a flag badge filters that view's table to matching rows; clicking the same one again clears it. Only one such filter active per view at a time (v1 — a new selection replaces the old one). A "Showing: X (n) × clear" indicator appears near the table when a filter is active. Implemented as a small shared helper (`toggleFilter`/`getActiveFilter`/`filterIndicatorHtml`/`flagKind`) rather than duplicated per view.
 
 ---
 
