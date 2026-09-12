@@ -78,10 +78,12 @@ Source: uploaded `Pro_active_Sales_Accounts_Effective_July_2026.xlsx`. Columns: 
 
 ## 5. Real findings baked into this build (don't re-litigate, but do keep re-verifying as things change)
 
-- **Lost quotes are never formally closed.** Every $5,000+ quote checked with a `lostCode` set (DEMANDCHG, PRICING, NO BID, PROJ-LOST, etc. — over 100 checked) still shows `status = 'Quote Issued'` or `'Quote WIP'`. There is no reliable way to compute a Lost bucket from current BC data. This needs a **process fix** (reps/BC admin actually closing quotes), not a data fix. A separate one-page instructional doc for the team covers this.
-- **`status = 'Converted to Order'` means an order was created, not that it shipped or invoiced.** Cross-checking against `salesOrders.shipped` and `invoices.quoteNo` showed 2 of 3 confirmed Won quotes hadn't shipped yet. Track funnel stage (Order Created → Shipped/Invoiced), not a flat Won/Lost binary.
-- **BC was recently upgraded**, changing quote numbering from an old "SQ" prefix to the current "SQIE" prefix (same business, same accounts, ~April 2026 cutover). A large, ongoing volume of real revenue (**$1,059,243.50** confirmed since April 2026, still posting as of early August) is legacy pre-upgrade business finishing its lifecycle against old "SQ" quote numbers — this is why the current system's own Won total ($30,609.74) looks tiny in isolation. Keep these two populations visually distinct (Archive's "System" column: Current vs. Legacy) rather than merging them into one number.
+- **Lost quotes are never formally closed.** Every $5,000+ quote checked with a `lostCode` set still shows `status = 'Quote Issued'`, `'Quote WIP'`, or `'Pending Approval'` — never closed. Re-verified on the September 2026 refresh: 29 of 29 (100%) active lost-coded quotes for the team's accounts also have `reasonCode` blank. There is no reliable way to compute a Lost bucket from current BC data. This needs a **process fix** (reps/BC admin actually closing quotes, and populating reasonCode alongside lostCode), not a data fix. A separate one-page instructional doc for the team covers this. The Lost Quotes view (Section 7, item 11) surfaces this list directly.
+- **`status = 'Converted to Order'` means an order was created, not that it shipped or invoiced.** Cross-checking against `salesOrders.shipped` and `invoices.quoteNo` showed 2 of 6 confirmed Won quotes (as of the latest refresh) hadn't shipped/invoiced yet. Track funnel stage (Order Created → Shipped/Invoiced), not a flat Won/Lost binary.
+- **BC was recently upgraded**, changing quote numbering from an old "SQ" prefix to the current "SQIE" prefix (same business, same accounts, ~April 2026 cutover). A large, ongoing volume of real revenue is legacy pre-upgrade business finishing its lifecycle against old "SQ" quote numbers — this is why the current system's own Won total looks tiny in isolation (compare Archive's Current vs. Legacy totals at refresh time). Keep these two populations visually distinct (Archive's "System" column: Current vs. Legacy) rather than merging them into one number.
 - **The 2,000-row query cap is the single most dangerous failure mode in this build.** It silently drops data rather than erroring, and it looks identical to "there's genuinely nothing there." Always filter tightly (by account list, by status, by amount threshold) rather than pulling broadly and filtering client-side.
+- **Customer-number collisions in SalesModel keep surfacing on refresh, not just the original two.** Confirmed again: `C132371` (Epirus vs. a dormant "Environmental Dimensions Inc") and `C129074` (Anduril Industries vs. a dormant "Hope College"). Newly found on a later refresh: `C151561` (Pano AI vs. a dormant "Phantom Intelligence") and `C105468` (Coast Pneumatics Inc vs. an unrelated dormant "Kfmb Tv"). Always filter SalesModel matches by name, never trust the customer number alone.
+- **Some real, currently-active accounts show zero SalesModel order history under their current Sell-to Number** — seen on a later refresh for Marshall Electronics Inc (L100201), Coast Pneumatics Inc (C105468), 4T Manufacturing (CIE0003447), and Mojave Advanced Solutions Inc. (CIE0002252). This is exactly the Legacy Customer Number remap risk called out in Section 3b/3c — none of these have been joined on Legacy Customer Number yet, so their New Business classification should be treated as unverified rather than confirmed until that fallback join is implemented.
 
 ---
 
@@ -93,6 +95,7 @@ QUOTES = [{
   followUpDate, followUpCode, followUpSalesperson, dueDate, expirationDate,
   quoteTotal, lastOrderDate, daysSinceLastOrder, classification, // customer-level classification, fallback
   moreLinesValue, // $ gap between quoteTotal and sum of displayed lines (freight, excluded lines, truncation)
+  lostCode, reasonCode, // straight from salesHeader/salesQuotes — feeds the Lost Quotes view (Section 7, item 11)
   lines: [{ lineNo, item, desc, qty, unitPrice, lineAmount, stock,
             itemClassification, itemDaysSince, itemLastOrderDate }] // item-level classification where available
 }]
@@ -118,8 +121,11 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** — every active $5K+ quote where `lostCode` is populated (pulled per-rep, same method as Section 4), status included as-is (still shows Quote Issued/WIP — a known BC limitation, not a bug here). Columns: quote number, customer, owner, quote total, lost code, reason code, status. Rows where `lostCode` is set but `reasonCode` is blank (or vice versa) are flagged and sorted first, then by quote total descending.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
+
+**Interactive filters (My Quote Queue, Rep View, Manager View, Lost Quotes):** the KPI/summary count cards and the inline flag badges are clickable filters — clicking one filters the table/list to matching rows, clicking the same one again clears it. Only one quick filter is active at a time per view (v1). A "Showing: `<label>` (`<count>`)" indicator with a clear/× button appears whenever a quick filter is active. This is in addition to the existing dropdown filters (Quote Type, Classification, Customer) on Queue/Rep View, which combine with a quick filter via AND.
 
 ---
 
@@ -132,9 +138,10 @@ Generated per-quote from data already present on that specific quote — **never
 ## 9. Still open / roadmap for whoever continues this
 
 - **Repeated No-Win** only sees the current active-quote snapshot. Needs a full historical quote log (not just currently-open quotes) to properly detect "quoted repeatedly, never won" patterns.
-- **Item-level classification** (the precise version, not the customer-level fallback) only covers the original ~28 quotes pulled early in this build. The SalesModel `ItemKey`/`ItemNumber` join bug (Section 3b) needs a real fix — likely filtering item lists in smaller batches — before extending it to the rest.
-- **Legacy Won pull only reaches back to ~April 2026.** Going further back needs more `$orderby`/pagination passes against the 2,000-row cap.
-- **Real Lost tracking** is a process problem, not a tool problem — see the separate instructional doc and the leadership proposal doc for Craig/Joanna/Jonathan.
+- **Item-level classification** (the precise version, not the customer-level fallback) is not currently computed at all — as of the September 2026 refresh every line uses the customer-level classification. An earlier build pass had ~28 quotes with true item-level precision; that coverage was not carried forward or recomputed on this refresh (traded off to keep an automated refresh within a reasonable run time). The SalesModel `ItemKey`/`ItemNumber` join bug (Section 3b) needs a real fix — likely filtering item lists in smaller batches — before item-level precision is worth re-extending to any quotes.
+- **Legacy Customer Number fallback join** (Section 3b/3c) still isn't implemented — 4 active accounts currently show no SalesModel history under their Sell-to Number as a result (see Section 5). Needs `d_SellToCustomer`'s Legacy Customer Number field pulled alongside Sell-to Number and matched as a fallback.
+- **Real Lost tracking** is a process problem, not a tool problem — see the separate instructional doc and the leadership proposal doc for Craig/Joanna/Jonathan. The Lost Quotes view (Section 7, item 11) makes the current gap visible but can't close it.
+- **Quick filters (Section 7's interactive-filter note) are single-select, v1 only.** Combining more than one quick filter at a time, or giving Lost Quotes/Manager View the same dropdown-filter treatment Queue/Rep View have, is open.
 - Nothing in this app writes back to BC. If that's ever wanted (e.g., a "close this quote" button), that's a meaningfully bigger scope change — confirm real business appetite for it before building.
 
 ---
