@@ -21,7 +21,7 @@ An internal tool for T-Jay Taylor's inside sales team (Adam Purcell, Kelli Jones
 ## 2. Architecture
 
 Single self-contained HTML file (`quote_opportunity_center.html`), rendered as a Claude artifact:
-- All data is embedded as JavaScript arrays (`QUOTES`, `ARCHIVE`, `LEGACY_WON`, `ALL_ACCOUNTS`) at build time — this is a **snapshot**, not a live-query app. Refreshing means re-running the data pulls in Section 4 and regenerating these arrays.
+- All data is embedded as JavaScript arrays (`QUOTES`, `ARCHIVE`, `LEGACY_WON`, `LOST_QUOTES`, `ALL_ACCOUNTS`) at build time — this is a **snapshot**, not a live-query app. Refreshing means re-running the data pulls in Section 4 and regenerating these arrays. `LOST_QUOTES` is a derived view (rows from the same per-rep pull where `lostCode` is populated), not a separate BC query.
 - Rep-editable fields (Quote Type, Target Price, Comments) persist via the artifact's `window.storage` API, keyed by `quoteNo|lineNo`.
 - No external dependencies. Vanilla JS, inline CSS. Modal-based drill-down (quote detail, customer detail, archive detail) rather than page navigation.
 - Branding: warm off-white background (`#FAF7F2`), dark charcoal nav (`#2B2B2B`), burnt-orange accent (`#C1541C`), cream cards (`#FFF9F2`), rounded corners.
@@ -93,6 +93,7 @@ QUOTES = [{
   followUpDate, followUpCode, followUpSalesperson, dueDate, expirationDate,
   quoteTotal, lastOrderDate, daysSinceLastOrder, classification, // customer-level classification, fallback
   moreLinesValue, // $ gap between quoteTotal and sum of displayed lines (freight, excluded lines, truncation)
+  reasonCode, lostCode, // carried straight from salesHeader3; feeds the Lost Quotes view
   lines: [{ lineNo, item, desc, qty, unitPrice, lineAmount, stock,
             itemClassification, itemDaysSince, itemLastOrderDate }] // item-level classification where available
 }]
@@ -102,6 +103,8 @@ ARCHIVE = [{ ...same shape as QUOTES entries, plus: outcome:"Won", orderNo, orde
 LEGACY_WON = [{ quoteNo, invoiceNo, customer, custNo, owner, amount, documentDate }] // no line detail, header-level only
 
 ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to compute zero-activity accounts
+
+LOST_QUOTES = [{ quoteNo, customer, custNo, owner, quoteTotal, lostCode, reasonCode, status }] // derived: QUOTES-pull rows where lostCode is populated
 ```
 
 ---
@@ -118,6 +121,9 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** — rows where `lostCode` is populated, pulled per-rep with the same method as Section 4 (same $5K+ threshold). Columns: quote number, customer, owner, quote total, lost code, reason code, status (status still shows Quote Issued/WIP — the known BC limitation from Section 5, expected, not a bug). Rows where `lostCode` is set but `reasonCode` is blank (or vice versa) are flagged and sorted first, then by quote total descending.
+
+**Interactive quick filters (My Quote Queue, Rep View, Manager View, Lost Quotes):** KPI/summary counts and inline flag badges are clickable filters, independent of the existing Quote Type/Classification/Customer dropdowns. Clicking filters the table/list to matching rows; clicking the same one again toggles it off. Only one quick filter active at a time per view (v1 — not combinable, not combined across views). A "Showing: <label> (<N>)" indicator with a clear/× button appears whenever a quick filter is active. Manager View's quick filter also crosses dimensions: clicking a rep's Overdue/Missing-Follow-Up count in the team rollup filters the coaching queue to that rep + flag; clicking a flag badge on a coaching-queue item filters to all items with that flag, showing every match rather than just the top-15 default.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
 
