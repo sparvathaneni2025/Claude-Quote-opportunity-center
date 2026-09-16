@@ -92,6 +92,8 @@ QUOTES = [{
   quoteNo, customer, custNo, owner, bcSalesperson, status,
   followUpDate, followUpCode, followUpSalesperson, dueDate, expirationDate,
   quoteTotal, lastOrderDate, daysSinceLastOrder, classification, // customer-level classification, fallback
+  lostCode, reasonCode, // header-level fields, added for the Lost Quotes view (Section 7, item 11) —
+                         // pulled straight from salesQuotes; reasonCode has been blank on every quote seen so far
   moreLinesValue, // $ gap between quoteTotal and sum of displayed lines (freight, excluded lines, truncation)
   lines: [{ lineNo, item, desc, qty, unitPrice, lineAmount, stock,
             itemClassification, itemDaysSince, itemLastOrderDate }] // item-level classification where available
@@ -118,8 +120,11 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** — derived from `QUOTES` (not a separate array): every active $5K+ quote where `lostCode` is non-blank. Columns: quote number, customer, owner, quote total, lost code, reason code, status. A row is flagged when `lostCode` is set but `reasonCode` is blank, or vice versa (in practice, `reasonCode` has been blank on every quote seen, so every Lost-coded quote is currently flagged). Sorted flagged-first, then by quote total descending. Carries a plain caption that BC never flips these to a real Lost/Cancelled status — that's the known limitation from Section 5, not a bug in this view.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
+
+**Click-to-filter (My Quote Queue, Rep View, Manager View, Lost Quotes):** every KPI/summary count tile and every inline flag badge in these four views is clickable — clicking filters that view's table to just the matching rows, and clicking the same tile/badge again clears it. Only one such filter is active at a time per view (a second click on a different tile replaces the first). This composes with, rather than replaces, the existing dropdown filters (Quote Type/Classification/Customer, date ranges) — the click-to-filter narrows whatever the dropdowns already have selected.
 
 ---
 
