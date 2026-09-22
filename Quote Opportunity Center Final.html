@@ -27,6 +27,11 @@
   .kpi .val { font-size: 22px; font-weight: 700; color: var(--nav); }
   .kpi .lbl { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
   .kpi.warn .val { color: var(--red); }
+  .kpi-clickable { cursor: pointer; transition: box-shadow 0.15s, border-color 0.15s; }
+  .kpi-clickable:hover { box-shadow: 0 0 0 2px var(--accent) inset; }
+  .kpi-clickable.kpi-active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; background: var(--cream); }
+  .flag-clickable { cursor: pointer; }
+  .flag-clickable:hover { opacity: 0.8; text-decoration: underline; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--card); border-radius: 10px; overflow: hidden; }
   thead th { background: var(--cream); text-align: left; padding: 10px 8px; font-weight: 600; color: var(--text-muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.4px; border-bottom: 2px solid var(--border); }
   tbody td { padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -67,6 +72,7 @@
     <button class="qoc-tab" data-tab="manager">Manager View</button>
     <button class="qoc-tab" data-tab="dq">Data Quality</button>
     <button class="qoc-tab" data-tab="archive">Archive</button>
+    <button class="qoc-tab" data-tab="lost">Lost Quotes</button>
     <button class="qoc-tab" data-tab="roadmap">Roadmap</button>
   </div>
   <div class="qoc-body">
@@ -80,6 +86,7 @@
     <div id="panel-customers" style="display:none"></div>
     <div id="panel-dq" style="display:none"></div>
     <div id="panel-archive" style="display:none"></div>
+    <div id="panel-lost" style="display:none"></div>
     <div id="panel-roadmap" style="display:none"></div>
   </div>
 </div>
@@ -1706,20 +1713,20 @@ function fmt$(n) { return "$" + Number(n).toLocaleString(undefined, {minimumFrac
 
 function computeFlags(q, edit) {
   const flags = [];
-  if (!q.followUpDate) { flags.push({label: "Missing Follow-Up Date", cls: "missing"}); }
+  if (!q.followUpDate) { flags.push({label: "Missing Follow-Up Date", cls: "missing", key: "missingFU"}); }
   else {
     const fu = daysBetween(q.followUpDate);
-    if (fu < 0) flags.push({label: "Overdue " + Math.abs(fu) + "d", cls: "overdue"});
-    else if (fu === 0) flags.push({label: "Due today", cls: "today"});
+    if (fu < 0) flags.push({label: "Overdue " + Math.abs(fu) + "d", cls: "overdue", key: "overdue"});
+    else if (fu === 0) flags.push({label: "Due today", cls: "today", key: "dueToday"});
   }
-  if (!q.followUpCode) flags.push({label: "Missing Follow-Up Code", cls: "missing"});
-  if (!q.followUpSalesperson) flags.push({label: "Missing Follow-Up Rep", cls: "missing"});
+  if (!q.followUpCode) flags.push({label: "Missing Follow-Up Code", cls: "missing", key: "missingCode"});
+  if (!q.followUpSalesperson) flags.push({label: "Missing Follow-Up Rep", cls: "missing", key: "missingRep"});
   const exp = daysBetween(q.expirationDate);
-  if (exp >= 0 && exp <= 5) flags.push({label: "Expires in " + exp + "d", cls: "today"});
+  if (exp >= 0 && exp <= 5) flags.push({label: "Expires in " + exp + "d", cls: "today", key: "expiring"});
   if (normalizeOwner(q.owner) !== q.bcSalesperson) {
-    flags.push({label: "Owner \u2260 BC Salesperson", cls: "missing"});
+    flags.push({label: "Owner \u2260 BC Salesperson", cls: "missing", key: "ownerMismatch"});
   }
-  if (edit && !edit.quoteType) flags.push({label: "Missing Bid/Buy", cls: "missing"});
+  if (edit && !edit.quoteType) flags.push({label: "Missing Bid/Buy", cls: "missing", key: "missingBidBuy"});
   return flags;
 }
 function normalizeOwner(owner) {
@@ -1741,6 +1748,34 @@ function getEdit(key) {
 }
 
 const tableFilters = {}; // containerId -> { quoteType: 'All', classification: 'All', customer: 'All' }
+
+// ---- Interactive KPI/badge click-to-filter (v1: one active filter key per container at a time) ----
+const activeFilter = {}; // containerId -> filterKey string or null
+const FILTER_LABELS = {
+  overdue: "Overdue", dueToday: "Due Today", missingFU: "Missing Follow-Up Date",
+  missingCode: "Missing Follow-Up Code", missingRep: "Missing Follow-Up Rep",
+  expiring: "Expiring ≤5 days", ownerMismatch: "Owner ≠ BC Salesperson",
+  missingBidBuy: "Missing Bid/Buy", flagged: "Missing Reason Code"
+};
+function toggleFilter(containerId, key, rerender) {
+  activeFilter[containerId] = (activeFilter[containerId] === key) ? null : key;
+  rerender();
+}
+function clearFilter(containerId, rerender) {
+  activeFilter[containerId] = null;
+  rerender();
+}
+function filterIndicatorHtml(containerId, count) {
+  const key = activeFilter[containerId];
+  if (!key) return '';
+  const label = FILTER_LABELS[key] || key;
+  return `<span style="font-size:12px;color:var(--accent);font-weight:600">Showing: ${label} (${count})</span> <a href="#" class="kpi-filter-clear" data-container="${containerId}" style="font-size:12px;color:var(--text-muted);text-decoration:underline">&times; clear</a>`;
+}
+function wireKpiFilterClear(panel, containerId, rerender) {
+  panel.querySelectorAll('.kpi-filter-clear').forEach(a => {
+    a.addEventListener('click', (e) => { e.preventDefault(); clearFilter(containerId, rerender); });
+  });
+}
 
 function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   const panel = document.getElementById(containerId);
@@ -1765,6 +1800,9 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   if (filt.customer !== 'All') {
     rows = rows.filter(({q}) => q.custNo === filt.customer);
   }
+  if (activeFilter[containerId]) {
+    rows = rows.filter(({flags}) => flags.some(f => f.key === activeFilter[containerId]));
+  }
 
   const customerOptions = [...new Map(quoteList.map(q => [q.custNo, q.customer])).entries()]
     .sort((a,b) => a[1].localeCompare(b[1]));
@@ -1778,15 +1816,16 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   const totalValue = quoteList.reduce((s,q)=>s+q.quoteTotal,0);
   const expiringCount = quoteList.filter(q => { const e = daysBetween(q.expirationDate); return e >= 0 && e <= 5; }).length;
   const filteredValue = rows.reduce((s,{l})=>s+l.lineAmount,0);
+  const kpiCls = k => 'kpi kpi-clickable' + (activeFilter[containerId]===k ? ' kpi-active' : '');
 
   panel.innerHTML = `
     ${titleHtml}
     ${subHtml}
     <div class="qoc-kpis">
-      <div class="kpi ${overdueCount?'warn':''}"><div class="val">${overdueCount}</div><div class="lbl">Overdue follow-up</div></div>
-      <div class="kpi ${todayCount?'warn':''}"><div class="val">${todayCount}</div><div class="lbl">Due today</div></div>
-      <div class="kpi ${missingFUCount?'warn':''}"><div class="val">${missingFUCount}</div><div class="lbl">Missing follow-up</div></div>
-      <div class="kpi ${expiringCount?'warn':''}"><div class="val">${expiringCount}</div><div class="lbl">Expiring &le;5 days</div></div>
+      <div class="${overdueCount?kpiCls('overdue')+' warn':kpiCls('overdue')}" data-filter-key="overdue"><div class="val">${overdueCount}</div><div class="lbl">Overdue follow-up</div></div>
+      <div class="${todayCount?kpiCls('dueToday')+' warn':kpiCls('dueToday')}" data-filter-key="dueToday"><div class="val">${todayCount}</div><div class="lbl">Due today</div></div>
+      <div class="${missingFUCount?kpiCls('missingFU')+' warn':kpiCls('missingFU')}" data-filter-key="missingFU"><div class="val">${missingFUCount}</div><div class="lbl">Missing follow-up</div></div>
+      <div class="${expiringCount?kpiCls('expiring')+' warn':kpiCls('expiring')}" data-filter-key="expiring"><div class="val">${expiringCount}</div><div class="lbl">Expiring &le;5 days</div></div>
       <div class="kpi"><div class="val">${fmt$(totalValue)}</div><div class="lbl">Active quote value</div></div>
       <div class="kpi"><div class="val">${quoteList.length}</div><div class="lbl">Quotes ($5K+)</div></div>
       <div class="kpi"><div class="val">${rows.length}</div><div class="lbl">Lines shown</div></div>
@@ -1816,6 +1855,7 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
         </select>
       </label>
       ${(filt.quoteType!=='All'||filt.classification!=='All'||filt.customer!=='All') ? `<span style="font-size:12px;color:var(--accent);font-weight:600">${fmt$(filteredValue)} in filtered view</span> <a href="#" id="${containerId}-filter-clear" style="font-size:12px;color:var(--text-muted);text-decoration:underline">clear filters</a>` : ''}
+      ${filterIndicatorHtml(containerId, rows.length)}
     </div>
     <div style="overflow-x:auto">
     <table>
@@ -1845,6 +1885,11 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
     tableFilters[containerId] = { quoteType: 'All', classification: 'All', customer: 'All' };
     renderQuoteTable(containerId, quoteList, titleHtml, subHtml);
   });
+  const rerenderThis = () => renderQuoteTable(containerId, quoteList, titleHtml, subHtml);
+  wireKpiFilterClear(panel, containerId, rerenderThis);
+  panel.querySelectorAll('.kpi-clickable').forEach(el => {
+    el.addEventListener('click', () => toggleFilter(containerId, el.dataset.filterKey, rerenderThis));
+  });
 
   const tbody = document.getElementById(containerId+'-tbody');
   if (!rows.length) {
@@ -1855,7 +1900,7 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><button class="drill-btn" data-quote="${q.quoteNo}" data-line="${l.lineNo}" title="View quote detail" style="background:var(--cream);border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:4px 8px;font-size:12px;">&#8599;</button></td>
-      <td>${flags.map(f=>`<span class="flag ${f.cls}">${f.label}</span><br/>`).join('') || '<span class="flag ok">On track</span>'}</td>
+      <td>${flags.map(f=>`<span class="flag ${f.cls}${f.key?' flag-clickable':''}" ${f.key?`data-filter-key="${f.key}"`:''}>${f.label}</span><br/>`).join('') || '<span class="flag ok">On track</span>'}</td>
       <td><a href="#" class="customer-link" data-custno="${q.custNo}" style="color:var(--nav);font-weight:700;text-decoration:underline;cursor:pointer">${q.customer}</a><br/><span style="color:var(--text-muted);font-size:11px">${q.custNo}</span></td>
       <td><a href="#" class="quote-link" data-quote="${q.quoteNo}" data-line="${l.lineNo}" style="color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer">${q.quoteNo}</a><br/><span style="color:var(--text-muted);font-size:11px">Line ${l.lineNo} &middot; ${q.status}</span></td>
       <td>${l.item}<br/><span style="color:var(--text-muted);font-size:11px">${l.desc}</span></td>
@@ -1892,6 +1937,9 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   });
   tbody.querySelectorAll('.customer-link').forEach(a => {
     a.addEventListener('click', (e) => { e.preventDefault(); openCustomerDetail(a.dataset.custno); });
+  });
+  tbody.querySelectorAll('.flag-clickable').forEach(el => {
+    el.addEventListener('click', () => toggleFilter(containerId, el.dataset.filterKey, rerenderThis));
   });
 }
 
@@ -2399,21 +2447,28 @@ function renderManager() {
     const flags = computeFlags(q, edit);
     if (flags.length) queueRows.push({q, l, flags});
   }));
+  const totalQueueRows = queueRows.length;
+  const mgrFilter = activeFilter['manager']; // { owner, key } or null
+  if (mgrFilter) {
+    queueRows = queueRows.filter(({q,flags}) => (!mgrFilter.owner || q.owner === mgrFilter.owner) && (!mgrFilter.key || flags.some(f => f.key === mgrFilter.key)));
+  }
   const rank = f => f.some(x=>x.cls==='overdue') ? 0 : f.some(x=>x.cls==='today') ? 1 : f.some(x=>x.cls==='missing') ? 2 : 3;
   queueRows.sort((a,b) => rank(a.flags)-rank(b.flags) || b.l.lineAmount-a.l.lineAmount);
   const topQueue = queueRows.slice(0, 15);
+  const mgrIndicator = mgrFilter ? `<span style="font-size:12px;color:var(--accent);font-weight:600">Showing: ${[mgrFilter.owner, mgrFilter.key ? (FILTER_LABELS[mgrFilter.key]||mgrFilter.key) : null].filter(Boolean).join(' · ') || 'All'} (${queueRows.length})</span> <a href="#" id="mgr-filter-clear" style="font-size:12px;color:var(--text-muted);text-decoration:underline">&times; clear</a>` : '';
 
   panel.innerHTML = `
     <div class="section-title">Manager View</div>
-    <div class="section-sub">Team rollup and exception-based coaching queue across Adam, Kelli, Jerik, and Spencer's assigned accounts.</div>
+    <div class="section-sub">Team rollup and exception-based coaching queue across Adam, Kelli, Jerik, and Spencer's assigned accounts. Click a rep's Overdue/Missing Follow-Up count, or any flag badge below, to filter the coaching queue.</div>
     <div class="card">
       <b style="font-size:13px">Team rollup by rep</b>
       <table style="margin-top:10px"><thead><tr><th>Rep</th><th>$5K+ Quotes</th><th>Active Value</th><th>Overdue</th><th>Missing Follow-Up</th><th>Zero-Activity Accounts</th></tr></thead>
-      <tbody>${repRows.map(([owner,d])=>`<tr><td>${owner}</td><td>${d.count}</td><td>${fmt$(d.value)}</td><td>${d.overdue ? '<span class="flag overdue">'+d.overdue+'</span>' : '0'}</td><td>${d.missingFU ? '<span class="flag missing">'+d.missingFU+'</span>' : '0'}</td><td>${d.zeroActivity || 0}</td></tr>`).join('')}</tbody></table>
+      <tbody>${repRows.map(([owner,d])=>`<tr><td>${owner}</td><td>${d.count}</td><td>${fmt$(d.value)}</td><td>${d.overdue ? '<span class="flag overdue flag-clickable" data-owner="'+owner+'" data-filter-key="overdue">'+d.overdue+'</span>' : '0'}</td><td>${d.missingFU ? '<span class="flag missing flag-clickable" data-owner="'+owner+'" data-filter-key="missingFU">'+d.missingFU+'</span>' : '0'}</td><td>${d.zeroActivity || 0}</td></tr>`).join('')}</tbody></table>
     </div>
     <div class="card">
-      <b style="font-size:13px">Coaching queue &mdash; exceptions only, highest dollar value first (top 15 of ${queueRows.length})</b>
+      <b style="font-size:13px">Coaching queue &mdash; exceptions only, highest dollar value first (top 15 of ${queueRows.length}${mgrFilter ? ' filtered, ' + totalQueueRows + ' total' : ''})</b>
       <div class="section-sub" style="margin-top:4px">The 5 Manager Review questions: (1) Is this a Bid or a Buy, and what's the evidence? (2) How will the customer decide who wins? (3) What supports the pricing or discount being asked? (4) What's the story and value proposition? (5) What's the next action, by when, and what outcome are we trying to achieve?</div>
+      <div style="margin:6px 0 10px">${mgrIndicator}</div>
       ${topQueue.map(({q,l,flags}) => `
         <div style="border-top:1px solid var(--border);padding:10px 0;display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
           <div>
@@ -2421,12 +2476,24 @@ function renderManager() {
             &mdash; ${q.quoteNo} &mdash; ${fmt$(l.lineAmount)} (${l.item}) &mdash; ${q.owner}<br/>
             <span style="font-size:12px;color:var(--text-muted)">Follow-up: ${q.followUpDate || 'none set'} (${q.followUpCode||'no code'}) &middot; Classification: ${l.itemClassification} &middot; Quote Type: ${getEdit(lineKey(q,l)).quoteType || 'not set'}</span>
           </div>
-          <div style="text-align:right;white-space:nowrap">${flags.map(f=>`<span class="flag ${f.cls}">${f.label}</span>`).join(' ')}</div>
+          <div style="text-align:right;white-space:nowrap">${flags.map(f=>`<span class="flag ${f.cls}${f.key?' flag-clickable':''}" ${f.key?`data-filter-key="${f.key}"`:''}>${f.label}</span>`).join(' ')}</div>
         </div>`).join('')}
     </div>
   `;
   panel.querySelectorAll('.mgr-quote-link').forEach(a => {
     a.addEventListener('click', (e) => { e.preventDefault(); openDetail(a.dataset.quote, Number(a.dataset.line)); });
+  });
+  const clearMgr = document.getElementById('mgr-filter-clear');
+  if (clearMgr) clearMgr.addEventListener('click', (e) => { e.preventDefault(); activeFilter['manager'] = null; renderManager(); });
+  panel.querySelectorAll('.flag-clickable').forEach(el => {
+    el.addEventListener('click', () => {
+      const owner = el.dataset.owner || null;
+      const key = el.dataset.filterKey || null;
+      const cur = activeFilter['manager'];
+      const same = cur && cur.owner === owner && cur.key === key;
+      activeFilter['manager'] = same ? null : { owner, key };
+      renderManager();
+    });
   });
 }
 
@@ -2536,11 +2603,58 @@ function renderDQ() {
   `;
 }
 
+function renderLostQuotes() {
+  const panel = document.getElementById('panel-lost');
+  const rows = QUOTES.filter(q => (q.lostCode && q.lostCode.trim() !== '') || (q.reasonCode && q.reasonCode.trim() !== ''));
+  const flagged = q => Boolean((q.lostCode && q.lostCode.trim()) && !(q.reasonCode && q.reasonCode.trim())) || Boolean(!(q.lostCode && q.lostCode.trim()) && (q.reasonCode && q.reasonCode.trim()));
+  const totalValue = rows.reduce((s,q)=>s+q.quoteTotal,0);
+  const flaggedRows = rows.filter(flagged);
+  const key = activeFilter['panel-lost'];
+  let shown = key === 'flagged' ? rows.filter(flagged) : rows;
+  shown = shown.slice().sort((a,b) => (flagged(a)?0:1) - (flagged(b)?0:1) || b.quoteTotal - a.quoteTotal);
+
+  panel.innerHTML = `
+    <div class="section-title">Lost Quotes</div>
+    <div class="section-sub">Quotes where a Lost Code and/or Reason Code has been set in Business Central, pulled per-rep the same way as the active queue. Status will still show Quote Issued/WIP for these &mdash; BC never formally closes a quote as Lost (known limitation, see Data Quality). Flagged rows (Lost Code set but Reason Code blank, or vice versa) sort first, then by quote value.</div>
+    <div class="qoc-kpis">
+      <div class="kpi"><div class="val">${rows.length}</div><div class="lbl">Lost-tagged quotes</div></div>
+      <div class="kpi"><div class="val">${fmt$(totalValue)}</div><div class="lbl">Total value</div></div>
+      <div class="kpi kpi-clickable${flaggedRows.length?' warn':''}${key==='flagged'?' kpi-active':''}" data-filter-key="flagged"><div class="val">${flaggedRows.length}</div><div class="lbl">Missing Lost/Reason Code</div></div>
+    </div>
+    ${key ? `<div style="margin-bottom:10px">${filterIndicatorHtml('panel-lost', shown.length)}</div>` : ''}
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th></th><th>Quote</th><th>Customer</th><th>Owner</th><th>Quote Total</th><th>Lost Code</th><th>Reason Code</th><th>Status</th></tr></thead>
+      <tbody>
+        ${shown.map(q => `<tr>
+          <td><button class="drill-btn" data-quote="${q.quoteNo}" data-line="${q.lines[0]?q.lines[0].lineNo:0}" style="background:var(--cream);border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:4px 8px;font-size:12px;">&#8599;</button></td>
+          <td><a href="#" class="quote-link" data-quote="${q.quoteNo}" data-line="${q.lines[0]?q.lines[0].lineNo:0}" style="color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer">${q.quoteNo}</a></td>
+          <td>${q.customer}<br/><span style="color:var(--text-muted);font-size:11px">${q.custNo}</span></td>
+          <td>${q.owner}</td>
+          <td>${fmt$(q.quoteTotal)}</td>
+          <td>${q.lostCode ? q.lostCode : '<span class="flag missing flag-clickable" data-filter-key="flagged">not set</span>'}</td>
+          <td>${q.reasonCode ? q.reasonCode : '<span class="flag missing flag-clickable" data-filter-key="flagged">not set</span>'}</td>
+          <td>${q.status} <span style="color:var(--text-muted);font-size:11px">(BC limitation — expected)</span></td>
+        </tr>`).join('') || `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px">No lost-tagged quotes in this filter.</td></tr>`}
+      </tbody>
+    </table></div>
+  `;
+  panel.querySelectorAll('.drill-btn').forEach(btn => {
+    btn.addEventListener('click', () => openDetail(btn.dataset.quote, Number(btn.dataset.line)));
+  });
+  panel.querySelectorAll('.quote-link').forEach(a => {
+    a.addEventListener('click', (e) => { e.preventDefault(); openDetail(a.dataset.quote, Number(a.dataset.line)); });
+  });
+  panel.querySelectorAll('.kpi-clickable, .flag-clickable').forEach(el => {
+    el.addEventListener('click', () => toggleFilter('panel-lost', el.dataset.filterKey, renderLostQuotes));
+  });
+  wireKpiFilterClear(panel, 'panel-lost', renderLostQuotes);
+}
+
 function renderRoadmap() {
   const panel = document.getElementById('panel-roadmap');
   panel.innerHTML = `
     <div class="section-title">Roadmap</div>
-    <div class="section-sub">Built so far: Queue, Rep View, filters (Quote Type, Classification, Customer), Stock, quote-line drill-down, customer drill-down, item-level classification, Winback, Repeated No-Win, Conversion with date range and rep leaderboard, Customers (including zero-activity accounts), exception-based Manager coaching queue, QUOTE+VALUE coaching panel, Archive, Data Quality.</div>
+    <div class="section-sub">Built so far: Queue, Rep View, filters (Quote Type, Classification, Customer), clickable KPI/flag-badge filters (Queue, Rep View, Manager View, Lost Quotes), Stock, quote-line drill-down, customer drill-down, item-level classification, Winback, Repeated No-Win, Conversion with date range and rep leaderboard, Customers (including zero-activity accounts), exception-based Manager coaching queue, QUOTE+VALUE coaching panel, Archive, Lost Quotes, Data Quality.</div>
     <div class="roadmap-grid">
       <div class="roadmap-card"><b>Broader Repeated No-Win detection</b>Currently limited to what's visible across active quotes in this snapshot; a full historical quote log would catch more genuine repeat-and-lose patterns.</div>
       <div class="roadmap-card"><b>Real Lost tracking</b>Needs a BC process change (closing quotes as Lost) \u2014 covered in the separate instructional document, not something this app can fix on its own.</div>
@@ -2553,7 +2667,7 @@ document.querySelectorAll('.qoc-tab').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.qoc-tab').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
-    ['queue','reps','winback','norewin','conversion','manager','customers','dq','archive','roadmap'].forEach(t => {
+    ['queue','reps','winback','norewin','conversion','manager','customers','dq','archive','lost','roadmap'].forEach(t => {
       document.getElementById('panel-'+t).style.display = (t === btn.dataset.tab) ? 'block' : 'none';
     });
   });
@@ -2574,6 +2688,7 @@ document.getElementById('snapshot-note').innerHTML =
   renderCustomers();
   renderDQ();
   renderArchive();
+  renderLostQuotes();
   renderRoadmap();
 })();
 </script>
