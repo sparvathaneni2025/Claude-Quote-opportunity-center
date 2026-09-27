@@ -91,7 +91,8 @@ Source: uploaded `Pro_active_Sales_Accounts_Effective_July_2026.xlsx`. Columns: 
 QUOTES = [{
   quoteNo, customer, custNo, owner, bcSalesperson, status,
   followUpDate, followUpCode, followUpSalesperson, dueDate, expirationDate,
-  quoteTotal, lastOrderDate, daysSinceLastOrder, classification, // customer-level classification, fallback
+  quoteTotal, lostCode, reasonCode, // both pulled straight from salesQuotes; feed the Lost Quotes view (Section 7, item 11)
+  lastOrderDate, daysSinceLastOrder, classification, // customer-level classification, fallback
   moreLinesValue, // $ gap between quoteTotal and sum of displayed lines (freight, excluded lines, truncation)
   lines: [{ lineNo, item, desc, qty, unitPrice, lineAmount, stock,
             itemClassification, itemDaysSince, itemLastOrderDate }] // item-level classification where available
@@ -118,8 +119,11 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** — active $5K+ quotes where `lostCode` is populated, pulled per-rep (same method as Section 4). Columns: quote number, customer, owner, quote total, lostCode, reasonCode, status (still shows Quote Issued/WIP — the known BC limitation from Section 5, expected). Flags rows where `lostCode` is set but `reasonCode` is blank (or vice versa) and sorts flagged rows first, then quote total descending.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
+
+**Interactive quick-filters (My Quote Queue, Rep View, Manager View, Lost Quotes):** KPI/summary tiles and inline flag badges are clickable — clicking filters the table to matching rows, clicking the same one again clears it. One active quick-filter per view at a time (v1); a "Showing: `<label>` (`<count>`)" bar with a clear/× link appears whenever one is active. This is layered on top of, not a replacement for, the existing Quote Type/Classification/Customer dropdown filters on Queue and Rep View.
 
 ---
 
