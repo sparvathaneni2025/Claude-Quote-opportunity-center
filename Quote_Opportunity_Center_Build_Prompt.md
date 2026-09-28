@@ -102,6 +102,11 @@ ARCHIVE = [{ ...same shape as QUOTES entries, plus: outcome:"Won", orderNo, orde
 LEGACY_WON = [{ quoteNo, invoiceNo, customer, custNo, owner, amount, documentDate }] // no line detail, header-level only
 
 ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to compute zero-activity accounts
+
+LOST_QUOTES = [{ quoteNo, customer, custNo, owner, quoteTotal, lostCode, reasonCode, status, flagged }]
+// rows where lostCode is populated, pulled per-rep same as Section 4's active-quote pull (not filtered to active status).
+// flagged = true when exactly one of lostCode/reasonCode is blank (in practice: lostCode is always set in this pull,
+// so flagged is true whenever reasonCode is blank). Sort: flagged first, then quoteTotal descending.
 ```
 
 ---
@@ -118,8 +123,11 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** — rows where `lostCode` is populated, pulled per-rep (same method as Section 4). Columns: quote number, customer, owner, quote total, lost code, reason code, status. Status still shows Quote Issued/WIP for these — a known BC limitation (see Section 5), not a pull error. Rows missing a reason code (or, in principle, missing a lost code while a reason code is set) are flagged and sorted first, then by quote total descending.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
+
+**Interactive quick filters (My Quote Queue, Rep View, Manager View, Lost Quotes):** the KPI/summary tiles (Overdue, Due Today, Missing Follow-Up, Expiring ≤5 Days on Queue/Rep/Manager; Missing Reason Code on Lost Quotes) and the matching inline flag badges in each row are clickable — clicking filters the table/list to just that condition, clicking the same one again clears it. Only one such quick filter is active at a time per view (v1) — it layers on top of the existing dropdown filters (Quote Type/Classification/Customer) rather than replacing them. A "Showing: <label> (<count>)" indicator with a clear/✕ link appears whenever a quick filter is active.
 
 ---
 

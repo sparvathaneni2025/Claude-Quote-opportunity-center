@@ -68,6 +68,7 @@
     <button class="qoc-tab" data-tab="dq">Data Quality</button>
     <button class="qoc-tab" data-tab="archive">Archive</button>
     <button class="qoc-tab" data-tab="roadmap">Roadmap</button>
+    <button class="qoc-tab" data-tab="lost">Lost Quotes</button>
   </div>
   <div class="qoc-body">
     <div class="snapshot-note" id="snapshot-note"></div>
@@ -81,6 +82,7 @@
     <div id="panel-dq" style="display:none"></div>
     <div id="panel-archive" style="display:none"></div>
     <div id="panel-roadmap" style="display:none"></div>
+    <div id="panel-lost" style="display:none"></div>
   </div>
 </div>
 <div id="qoc-modal-backdrop" style="display:none;position:fixed;inset:0;background:rgba(30,26,22,0.55);z-index:9999;align-items:center;justify-content:center;padding:24px;">
@@ -1693,6 +1695,8 @@ const ALL_ACCOUNTS = [
   { custNo: "C188499", name: "ClaroNav", owner: "Jerik Wong" },
   { custNo: "L450214", name: "US GOV-Bonneville Power Administration", owner: "Jerik Wong" },
 ];
+const LOST_QUOTES = [
+]; // placeholder -- populated by the data refresh (rows where lostCode is set)
 const TODAY = new Date("2026-08-05");
 const STORAGE_KEY = "qoc-line-edits-v1";
 let editState = {}; // key: quoteNo|lineNo -> {quoteType, targetPrice, comments}
@@ -1741,11 +1745,34 @@ function getEdit(key) {
 }
 
 const tableFilters = {}; // containerId -> { quoteType: 'All', classification: 'All', customer: 'All' }
+const quickFilters = {}; // containerId -> null | 'overdue' | 'today' | 'missingFU' | 'expiring'
+const QUICK_FILTER_LABELS = { overdue: 'Overdue', today: 'Due Today', missingFU: 'Missing Follow-Up', expiring: 'Expiring ≤5 Days' };
+function quickFilterMatch(kind, q) {
+  if (!kind) return true;
+  if (kind === 'overdue') return !!(q.followUpDate && daysBetween(q.followUpDate) < 0);
+  if (kind === 'today') return !!(q.followUpDate && daysBetween(q.followUpDate) === 0);
+  if (kind === 'missingFU') return !q.followUpDate;
+  if (kind === 'expiring') { const e = daysBetween(q.expirationDate); return e >= 0 && e <= 5; }
+  return true;
+}
+function flagKindOf(label) {
+  if (label === 'Missing Follow-Up Date') return 'missingFU';
+  if (/^Overdue/.test(label)) return 'overdue';
+  if (label === 'Due today') return 'today';
+  if (/^Expires in/.test(label)) return 'expiring';
+  return null;
+}
+function toggleQuickFilter(containerId, kind, rerender) {
+  quickFilters[containerId] = (quickFilters[containerId] === kind) ? null : kind;
+  rerender();
+}
 
 function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   const panel = document.getElementById(containerId);
   if (!tableFilters[containerId]) tableFilters[containerId] = { quoteType: 'All', classification: 'All', customer: 'All' };
   const filt = tableFilters[containerId];
+  const qf = quickFilters[containerId] || null;
+  const rerender = () => renderQuoteTable(containerId, quoteList, titleHtml, subHtml);
 
   let rows = [];
   quoteList.forEach(q => {
@@ -1765,6 +1792,9 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   if (filt.customer !== 'All') {
     rows = rows.filter(({q}) => q.custNo === filt.customer);
   }
+  if (qf) {
+    rows = rows.filter(({q}) => quickFilterMatch(qf, q));
+  }
 
   const customerOptions = [...new Map(quoteList.map(q => [q.custNo, q.customer])).entries()]
     .sort((a,b) => a[1].localeCompare(b[1]));
@@ -1783,14 +1813,15 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
     ${titleHtml}
     ${subHtml}
     <div class="qoc-kpis">
-      <div class="kpi ${overdueCount?'warn':''}"><div class="val">${overdueCount}</div><div class="lbl">Overdue follow-up</div></div>
-      <div class="kpi ${todayCount?'warn':''}"><div class="val">${todayCount}</div><div class="lbl">Due today</div></div>
-      <div class="kpi ${missingFUCount?'warn':''}"><div class="val">${missingFUCount}</div><div class="lbl">Missing follow-up</div></div>
-      <div class="kpi ${expiringCount?'warn':''}"><div class="val">${expiringCount}</div><div class="lbl">Expiring &le;5 days</div></div>
+      <div class="kpi ${overdueCount?'warn':''}" id="${containerId}-kpi-overdue" style="cursor:pointer;${qf==='overdue'?'outline:2px solid var(--accent);':''}"><div class="val">${overdueCount}</div><div class="lbl">Overdue follow-up</div></div>
+      <div class="kpi ${todayCount?'warn':''}" id="${containerId}-kpi-today" style="cursor:pointer;${qf==='today'?'outline:2px solid var(--accent);':''}"><div class="val">${todayCount}</div><div class="lbl">Due today</div></div>
+      <div class="kpi ${missingFUCount?'warn':''}" id="${containerId}-kpi-missingFU" style="cursor:pointer;${qf==='missingFU'?'outline:2px solid var(--accent);':''}"><div class="val">${missingFUCount}</div><div class="lbl">Missing follow-up</div></div>
+      <div class="kpi ${expiringCount?'warn':''}" id="${containerId}-kpi-expiring" style="cursor:pointer;${qf==='expiring'?'outline:2px solid var(--accent);':''}"><div class="val">${expiringCount}</div><div class="lbl">Expiring &le;5 days</div></div>
       <div class="kpi"><div class="val">${fmt$(totalValue)}</div><div class="lbl">Active quote value</div></div>
       <div class="kpi"><div class="val">${quoteList.length}</div><div class="lbl">Quotes ($5K+)</div></div>
       <div class="kpi"><div class="val">${rows.length}</div><div class="lbl">Lines shown</div></div>
     </div>
+    ${qf ? `<div style="margin-bottom:12px"><span class="badge" style="background:var(--accent);color:#fff">Showing: ${QUICK_FILTER_LABELS[qf]} (${rows.length})</span> <a href="#" id="${containerId}-qf-clear" style="font-size:12px;color:var(--text-muted);text-decoration:underline;margin-left:8px">clear &times;</a></div>` : ''}
     <div style="display:flex;gap:16px;align-items:center;margin-bottom:12px;flex-wrap:wrap;background:var(--cream);border:1px solid var(--border);border-radius:8px;padding:10px 14px;">
       <span style="font-size:12px;font-weight:600;color:var(--text-muted)">FILTER:</span>
       <label style="font-size:12px;color:var(--text-muted)">Quote Type
@@ -1845,6 +1876,12 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
     tableFilters[containerId] = { quoteType: 'All', classification: 'All', customer: 'All' };
     renderQuoteTable(containerId, quoteList, titleHtml, subHtml);
   });
+  ['overdue','today','missingFU','expiring'].forEach(kind => {
+    const el = document.getElementById(containerId+'-kpi-'+kind);
+    if (el) el.addEventListener('click', () => toggleQuickFilter(containerId, kind, rerender));
+  });
+  const qfClear = document.getElementById(containerId+'-qf-clear');
+  if (qfClear) qfClear.addEventListener('click', (e) => { e.preventDefault(); quickFilters[containerId] = null; rerender(); });
 
   const tbody = document.getElementById(containerId+'-tbody');
   if (!rows.length) {
@@ -1855,7 +1892,7 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td><button class="drill-btn" data-quote="${q.quoteNo}" data-line="${l.lineNo}" title="View quote detail" style="background:var(--cream);border:1px solid var(--border);border-radius:6px;cursor:pointer;padding:4px 8px;font-size:12px;">&#8599;</button></td>
-      <td>${flags.map(f=>`<span class="flag ${f.cls}">${f.label}</span><br/>`).join('') || '<span class="flag ok">On track</span>'}</td>
+      <td>${flags.map(f=>{ const k = flagKindOf(f.label); return k ? `<span class="flag ${f.cls} qf-badge" data-kind="${k}" style="cursor:pointer">${f.label}</span><br/>` : `<span class="flag ${f.cls}">${f.label}</span><br/>`; }).join('') || '<span class="flag ok">On track</span>'}</td>
       <td><a href="#" class="customer-link" data-custno="${q.custNo}" style="color:var(--nav);font-weight:700;text-decoration:underline;cursor:pointer">${q.customer}</a><br/><span style="color:var(--text-muted);font-size:11px">${q.custNo}</span></td>
       <td><a href="#" class="quote-link" data-quote="${q.quoteNo}" data-line="${l.lineNo}" style="color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer">${q.quoteNo}</a><br/><span style="color:var(--text-muted);font-size:11px">Line ${l.lineNo} &middot; ${q.status}</span></td>
       <td>${l.item}<br/><span style="color:var(--text-muted);font-size:11px">${l.desc}</span></td>
@@ -1892,6 +1929,9 @@ function renderQuoteTable(containerId, quoteList, titleHtml, subHtml) {
   });
   tbody.querySelectorAll('.customer-link').forEach(a => {
     a.addEventListener('click', (e) => { e.preventDefault(); openCustomerDetail(a.dataset.custno); });
+  });
+  tbody.querySelectorAll('.qf-badge').forEach(el => {
+    el.addEventListener('click', () => toggleQuickFilter(containerId, el.dataset.kind, rerender));
   });
 }
 
@@ -2087,6 +2127,7 @@ function funnelStage(q) {
 }
 
 let archiveDateFilter = { from: '', to: '' };
+let lostQuickFilter = null; // null | 'missingReason'
 
 function renderArchive() {
   const panel = document.getElementById('panel-archive');
@@ -2401,7 +2442,15 @@ function renderManager() {
   }));
   const rank = f => f.some(x=>x.cls==='overdue') ? 0 : f.some(x=>x.cls==='today') ? 1 : f.some(x=>x.cls==='missing') ? 2 : 3;
   queueRows.sort((a,b) => rank(a.flags)-rank(b.flags) || b.l.lineAmount-a.l.lineAmount);
-  const topQueue = queueRows.slice(0, 15);
+
+  const qf = quickFilters['panel-manager'] || null;
+  const rerender = renderManager;
+  const teamOverdue = QUOTES.filter(q => q.followUpDate && daysBetween(q.followUpDate) < 0).length;
+  const teamToday = QUOTES.filter(q => q.followUpDate && daysBetween(q.followUpDate) === 0).length;
+  const teamMissingFU = QUOTES.filter(q => !q.followUpDate).length;
+  const teamExpiring = QUOTES.filter(q => { const e = daysBetween(q.expirationDate); return e >= 0 && e <= 5; }).length;
+  const filteredQueue = qf ? queueRows.filter(({q}) => quickFilterMatch(qf, q)) : queueRows;
+  const displayQueue = qf ? filteredQueue : filteredQueue.slice(0, 15);
 
   panel.innerHTML = `
     <div class="section-title">Manager View</div>
@@ -2411,22 +2460,38 @@ function renderManager() {
       <table style="margin-top:10px"><thead><tr><th>Rep</th><th>$5K+ Quotes</th><th>Active Value</th><th>Overdue</th><th>Missing Follow-Up</th><th>Zero-Activity Accounts</th></tr></thead>
       <tbody>${repRows.map(([owner,d])=>`<tr><td>${owner}</td><td>${d.count}</td><td>${fmt$(d.value)}</td><td>${d.overdue ? '<span class="flag overdue">'+d.overdue+'</span>' : '0'}</td><td>${d.missingFU ? '<span class="flag missing">'+d.missingFU+'</span>' : '0'}</td><td>${d.zeroActivity || 0}</td></tr>`).join('')}</tbody></table>
     </div>
+    <div class="qoc-kpis">
+      <div class="kpi ${teamOverdue?'warn':''}" id="mgr-kpi-overdue" style="cursor:pointer;${qf==='overdue'?'outline:2px solid var(--accent);':''}"><div class="val">${teamOverdue}</div><div class="lbl">Overdue follow-up</div></div>
+      <div class="kpi ${teamToday?'warn':''}" id="mgr-kpi-today" style="cursor:pointer;${qf==='today'?'outline:2px solid var(--accent);':''}"><div class="val">${teamToday}</div><div class="lbl">Due today</div></div>
+      <div class="kpi ${teamMissingFU?'warn':''}" id="mgr-kpi-missingFU" style="cursor:pointer;${qf==='missingFU'?'outline:2px solid var(--accent);':''}"><div class="val">${teamMissingFU}</div><div class="lbl">Missing follow-up</div></div>
+      <div class="kpi ${teamExpiring?'warn':''}" id="mgr-kpi-expiring" style="cursor:pointer;${qf==='expiring'?'outline:2px solid var(--accent);':''}"><div class="val">${teamExpiring}</div><div class="lbl">Expiring &le;5 days</div></div>
+    </div>
+    ${qf ? `<div style="margin-bottom:12px"><span class="badge" style="background:var(--accent);color:#fff">Showing: ${QUICK_FILTER_LABELS[qf]} (${filteredQueue.length})</span> <a href="#" id="mgr-qf-clear" style="font-size:12px;color:var(--text-muted);text-decoration:underline;margin-left:8px">clear &times;</a></div>` : ''}
     <div class="card">
-      <b style="font-size:13px">Coaching queue &mdash; exceptions only, highest dollar value first (top 15 of ${queueRows.length})</b>
+      <b style="font-size:13px">Coaching queue &mdash; exceptions only, highest dollar value first ${qf ? `(${displayQueue.length} matching "${QUICK_FILTER_LABELS[qf]}")` : `(top 15 of ${queueRows.length})`}</b>
       <div class="section-sub" style="margin-top:4px">The 5 Manager Review questions: (1) Is this a Bid or a Buy, and what's the evidence? (2) How will the customer decide who wins? (3) What supports the pricing or discount being asked? (4) What's the story and value proposition? (5) What's the next action, by when, and what outcome are we trying to achieve?</div>
-      ${topQueue.map(({q,l,flags}) => `
+      ${displayQueue.map(({q,l,flags}) => `
         <div style="border-top:1px solid var(--border);padding:10px 0;display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
           <div>
             <a href="#" class="mgr-quote-link" data-quote="${q.quoteNo}" data-line="${l.lineNo}" style="color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer">${q.customer}</a>
             &mdash; ${q.quoteNo} &mdash; ${fmt$(l.lineAmount)} (${l.item}) &mdash; ${q.owner}<br/>
             <span style="font-size:12px;color:var(--text-muted)">Follow-up: ${q.followUpDate || 'none set'} (${q.followUpCode||'no code'}) &middot; Classification: ${l.itemClassification} &middot; Quote Type: ${getEdit(lineKey(q,l)).quoteType || 'not set'}</span>
           </div>
-          <div style="text-align:right;white-space:nowrap">${flags.map(f=>`<span class="flag ${f.cls}">${f.label}</span>`).join(' ')}</div>
+          <div style="text-align:right;white-space:nowrap">${flags.map(f=>{ const k = flagKindOf(f.label); return k ? `<span class="flag ${f.cls} mgr-qf-badge" data-kind="${k}" style="cursor:pointer">${f.label}</span>` : `<span class="flag ${f.cls}">${f.label}</span>`; }).join(' ')}</div>
         </div>`).join('')}
     </div>
   `;
   panel.querySelectorAll('.mgr-quote-link').forEach(a => {
     a.addEventListener('click', (e) => { e.preventDefault(); openDetail(a.dataset.quote, Number(a.dataset.line)); });
+  });
+  ['overdue','today','missingFU','expiring'].forEach(kind => {
+    const el = document.getElementById('mgr-kpi-'+kind);
+    if (el) el.addEventListener('click', () => toggleQuickFilter('panel-manager', kind, rerender));
+  });
+  const mgrClear = document.getElementById('mgr-qf-clear');
+  if (mgrClear) mgrClear.addEventListener('click', (e) => { e.preventDefault(); quickFilters['panel-manager'] = null; rerender(); });
+  panel.querySelectorAll('.mgr-qf-badge').forEach(el => {
+    el.addEventListener('click', () => toggleQuickFilter('panel-manager', el.dataset.kind, rerender));
   });
 }
 
@@ -2540,7 +2605,7 @@ function renderRoadmap() {
   const panel = document.getElementById('panel-roadmap');
   panel.innerHTML = `
     <div class="section-title">Roadmap</div>
-    <div class="section-sub">Built so far: Queue, Rep View, filters (Quote Type, Classification, Customer), Stock, quote-line drill-down, customer drill-down, item-level classification, Winback, Repeated No-Win, Conversion with date range and rep leaderboard, Customers (including zero-activity accounts), exception-based Manager coaching queue, QUOTE+VALUE coaching panel, Archive, Data Quality.</div>
+    <div class="section-sub">Built so far: Queue, Rep View, filters (Quote Type, Classification, Customer), clickable KPI/flag-badge quick filters (Queue, Rep View, Manager View, Lost Quotes), Stock, quote-line drill-down, customer drill-down, item-level classification, Winback, Repeated No-Win, Conversion with date range and rep leaderboard, Customers (including zero-activity accounts), exception-based Manager coaching queue, QUOTE+VALUE coaching panel, Archive, Lost Quotes, Data Quality.</div>
     <div class="roadmap-grid">
       <div class="roadmap-card"><b>Broader Repeated No-Win detection</b>Currently limited to what's visible across active quotes in this snapshot; a full historical quote log would catch more genuine repeat-and-lose patterns.</div>
       <div class="roadmap-card"><b>Real Lost tracking</b>Needs a BC process change (closing quotes as Lost) \u2014 covered in the separate instructional document, not something this app can fix on its own.</div>
@@ -2549,11 +2614,62 @@ function renderRoadmap() {
   `;
 }
 
+function renderLostQuotes() {
+  const panel = document.getElementById('panel-lost');
+  const totalCount = LOST_QUOTES.length;
+  const missingReasonCount = LOST_QUOTES.filter(r => r.flagged).length;
+  const totalValue = LOST_QUOTES.reduce((s,r)=>s+r.quoteTotal,0);
+
+  let rows = LOST_QUOTES.slice();
+  if (lostQuickFilter === 'missingReason') rows = rows.filter(r => r.flagged);
+  rows.sort((a,b) => (b.flagged - a.flagged) || (b.quoteTotal - a.quoteTotal));
+
+  panel.innerHTML = `
+    <div class="section-title">Lost Quotes</div>
+    <div class="section-sub">Rows where a Lost Code has been set on the quote in Business Central, pulled per-rep (same account-list method used for the active queue). <b>Status will still show "Quote Issued" or "Quote WIP"</b> for these &mdash; BC never formally closes a quote when a rep tags a lost reason, so that's an expected, known limitation, not a pull error (see Data Quality).</div>
+    <div class="qoc-kpis">
+      <div class="kpi"><div class="val">${totalCount}</div><div class="lbl">Lost-coded quotes</div></div>
+      <div class="kpi"><div class="val">${fmt$(totalValue)}</div><div class="lbl">Total value</div></div>
+      <div class="kpi ${missingReasonCount?'warn':''}" id="lost-kpi-missing" style="cursor:pointer;${lostQuickFilter==='missingReason'?'outline:2px solid var(--accent);':''}"><div class="val">${missingReasonCount}</div><div class="lbl">Missing Reason Code</div></div>
+    </div>
+    ${lostQuickFilter ? `<div style="margin-bottom:12px"><span class="badge" style="background:var(--accent);color:#fff">Showing: Missing Reason Code (${rows.length})</span> <a href="#" id="lost-filter-clear" style="font-size:12px;color:var(--text-muted);text-decoration:underline;margin-left:8px">clear &times;</a></div>` : ''}
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Quote #</th><th>Customer</th><th>Owner</th><th>Quote Total</th><th>Lost Code</th><th>Reason Code</th><th>Status</th></tr></thead>
+      <tbody>
+        ${rows.length ? rows.map(r => `<tr>
+          <td><a href="#" class="lost-quote-link" data-quote="${r.quoteNo}" style="color:var(--accent);font-weight:600;text-decoration:underline;cursor:pointer">${r.quoteNo}</a></td>
+          <td>${r.customer}<br/><span style="color:var(--text-muted);font-size:11px">${r.custNo}</span></td>
+          <td>${r.owner}</td>
+          <td>${fmt$(r.quoteTotal)}</td>
+          <td><span class="badge">${r.lostCode || '—'}</span></td>
+          <td>${r.reasonCode ? `<span class="badge">${r.reasonCode}</span>` : `<span class="flag missing lost-qf-badge" style="cursor:pointer">Missing Reason Code</span>`}</td>
+          <td>${r.status}</td>
+        </tr>`).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">No lost-coded quotes match this filter.</td></tr>`}
+      </tbody>
+    </table></div>
+  `;
+  const kpi = document.getElementById('lost-kpi-missing');
+  if (kpi) kpi.addEventListener('click', () => { lostQuickFilter = (lostQuickFilter === 'missingReason') ? null : 'missingReason'; renderLostQuotes(); });
+  const clearBtn = document.getElementById('lost-filter-clear');
+  if (clearBtn) clearBtn.addEventListener('click', (e) => { e.preventDefault(); lostQuickFilter = null; renderLostQuotes(); });
+  panel.querySelectorAll('.lost-qf-badge').forEach(el => {
+    el.addEventListener('click', () => { lostQuickFilter = (lostQuickFilter === 'missingReason') ? null : 'missingReason'; renderLostQuotes(); });
+  });
+  panel.querySelectorAll('.lost-quote-link').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      const q = findQuote(a.dataset.quote);
+      if (q) { openDetail(a.dataset.quote, q.lines[0] ? q.lines[0].lineNo : null); }
+      else { alert('This quote is not in the active $5K+ queue view (it may be Won/cancelled or otherwise excluded), so no line-level drill-down is available here. The values shown above come from the quote header pull.'); }
+    });
+  });
+}
+
 document.querySelectorAll('.qoc-tab').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.qoc-tab').forEach(b=>b.classList.remove('active'));
     btn.classList.add('active');
-    ['queue','reps','winback','norewin','conversion','manager','customers','dq','archive','roadmap'].forEach(t => {
+    ['queue','reps','winback','norewin','conversion','manager','customers','dq','archive','roadmap','lost'].forEach(t => {
       document.getElementById('panel-'+t).style.display = (t === btn.dataset.tab) ? 'block' : 'none';
     });
   });
@@ -2575,5 +2691,6 @@ document.getElementById('snapshot-note').innerHTML =
   renderDQ();
   renderArchive();
   renderRoadmap();
+  renderLostQuotes();
 })();
 </script>
