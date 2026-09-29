@@ -142,3 +142,41 @@ Generated per-quote from data already present on that specific quote — **never
 ## 10. Prompt to hand to Claude to continue this
 
 > "Using the attached account list and the Business Central Explorer / PowerBI MCP connectors, refresh the Quote Opportunity Center dashboard following the exact data-pull methodology in Section 4 of this spec. Pull per-rep, not broadly, to avoid the 2,000-row cap silently dropping data. Preserve the existing app structure, styling, and views (Section 7) exactly — just refresh the embedded QUOTES/ARCHIVE/LEGACY_WON/ALL_ACCOUNTS arrays with current data, re-verify the findings in Section 5 still hold, and flag anything new the same way — plainly, in Data Quality, with the debugging evidence shown, not just the conclusion."
+
+---
+
+## 11. Corrections and additions from the 2026-09-29 refresh
+
+This section is appended by a later refresh. **Where it contradicts sections 1–10, this section is right** — the statements below were measured directly against the live connectors, and the ones marked *correction* mean section 3 or 4 was actively misleading, not merely incomplete.
+
+### 11a. Connector behaviour
+
+- **Correction — the row cap is 2,500, not 2,000, and `$top` is ignored.** Section 3a says 2,000. A query sent with `$top=2000` returns **2,500** rows, reproduced on two different sort directions. You cannot use `$top` to bound a result or to probe how close you are to the limit. The practical danger: validating a pull by checking "did I get exactly 2,000 rows?" will pass a truncated 2,500-row result as complete.
+- **Correction — the two-sort trick in section 4 step 7 recovers about 4% of the legacy data.** Pulling legacy `SQ` invoices once `$orderby=documentDate asc` and once `desc` yields **472** usable records. Pulling **per account** yields **13,149** — 28× more, reaching back to 2023-01-03 instead of ~April 2026. Each sort direction spends its whole 2,500-row budget on one end of the range (roughly six weeks at the start, seven at the end) and leaves 2023-02 through 2026-08 entirely unpulled. Per-account is the only method that works here, exactly as it is for active quotes.
+- `postedSalesInvoices` is the **only** entity carrying invoice `amount` (the `invoices` entity has no amount field). It cannot be browsed — it rejects any query without an explicit `no` filter — and exposes no `quoteNo`, `sellToCustomerNo` or `responsibilityCenter`, so amounts must be fetched invoice number by invoice number. Measured limits: **~40 `no eq` terms per call** (150 terms exceeds a URL length limit and returns "resource has been removed"); **`$select` is mandatory in practice** (without it one invoice returns ~302 KB, because it expands invoice lines *and* a base64 PDF, and times out at 60s); and **calls must be serial** — parallel calls raise the timeout rate. Budget one call per 40 invoices.
+- Date literals work unquoted in filters (`documentDate ge 2024-01-01`), which is what makes per-account date-windowed splits possible when one account alone exceeds the cap.
+- Still true: `not` filters are rejected outright. Do all negation client-side.
+
+### 11b. SalesModel
+
+- **The `ItemKey`/`ItemNumber` join bug in section 3b is solved.** Don't use `SUMMARIZECOLUMNS` grouped by `f_Transaction[ItemKey]`. Instead drive from an in-query `DATATABLE` of the (customer, item) pairs and use `CALCULATE` with `FILTER(ALL(dim), …)` filter arguments — those evaluate in the outer row context, so no `RELATED()` and no context transition is involved. Ran 60 pairs in 3 batches with no errors. Extending it further is batching work, not research.
+- **`f_Transaction` is not purely transactional.** Its `TransactionType` column carries `Goal` and `Budget` planning rows alongside Invoice / CreditMemo / OpenOrder / Archived / ICC DailyBilling. **Any query that sums or counts `f_Transaction` without excluding Goal and Budget mixes plan into actuals.** `Archived` is a judgment call (it includes orders later deleted or cancelled); including it moved the date on 2 of 60 pairs and changed no recency band.
+- **`d_Item` holds one row per item number per `SourceCompany`**, so `ItemKey` is a part-plus-company identifier, not a part identifier. Filter order history by `ItemNumber` to sweep in every variant; filtering by `ItemKey` silently sees one company's slice.
+- **There is no Legacy Customer Number column** on `d_SellToCustomer`, or anywhere in the SalesModel schema. The only "Legacy" object is a measure called `Legacy Customers`, which is a count. **The two-key join that the pro-active-KPIs methodology calls for cannot be implemented as specified**, so a customer renumbered during the upgrade can still read as lapsed. This needs an answer from whoever owns the semantic model before lapsed/winback logic is trusted for renumbered accounts.
+- **The customer-number collision in section 3b is systematic, not anecdotal.** 133 assigned accounts return 155 rows: **22 numbers resolve to two rows each**, always a live `SourceCompany = 'IEONE'` record versus a dormant legacy `'PE'` shell. All 22 are C-prefixed. Disambiguate by preferring `IEONE`, then the most recent `LastOrderDate`. **Do not fall back to name matching** — C193073 and C197030 both carry the name "Saronic Technologies".
+- **"Never ordered" is encoded as sentinels, not nulls:** `LastOrderDate`/`FirstOrderDate` = `1/1/1900` and `DaysSinceLastOrder` = `99999`. Anything that averages or charts days-since-order without excluding these is skewed by 99999s. Also present: rows with an empty `CustomerName`, all PE-side shells.
+- **An account-level sentinel is not proof a customer never bought.** At least one case has the account reading as never-ordered while item-level history shows a real dated order for that part. Where the two disagree, the per-part fact data was the trustworthy one.
+
+### 11c. Section 5 findings, re-verified 2026-09-29
+
+- **Lost quotes still never formally close.** All 123 quotes with a `lostCode` sit in an open status. *Refinement:* the statuses are Quote Issued (97), Quote WIP (25) **and Pending Approval (1)** — a filter hardcoded to the first two drops a record. No "Lost" or "Cancelled" status value is in use at all.
+- **New: `reasonCode` is entirely unpopulated** — blank on all 720 quotes scanned, so this is not two fields drifting apart but one field nobody fills in. Any column keyed on it is structurally empty. Worth confirming with BC admin whether `reasonCode` is even the intended field for this team.
+- **`Converted to Order` still does not mean shipped or invoiced.**
+- **New: a fully-invoiced order leaves the `salesOrders` entity.** 2 of 6 Won quotes have a posted invoice but no `salesOrders` row; their invoices still carry an `orderNo`. Testing conversion against `salesOrders` alone undercounts, and the error grows as more orders close out. Test order **OR** invoice.
+- **The SQ/SQIE legacy split still holds**, and the pre-upgrade backlog is visibly tapering: 274 legacy invoices in 2026-04 down to 19 in 2026-09.
+
+### 11d. Notes on section 4's method
+
+Section 4's per-rep instruction is right and the reason is worth restating: this refresh returned **130 active $5,000+ quotes / $7.09M** versus 89 / ~$4.5M previously, and the largest single call returned 213 rows. Per-rep is what keeps every call far enough from the cap that truncation cannot happen.
+
+One gap this refresh could not close: **`ALL_ACCOUNTS` was not re-derived.** The account roster embedded in the app was reused as-is, because the source `Pro_active_Sales_Accounts_Effective_July_2026.xlsx` was not available to the refresh. If T-Jay has changed the account list, this refresh does not reflect it, and every pull is scoped to the stale roster. Supply the current spreadsheet to the next refresh.
