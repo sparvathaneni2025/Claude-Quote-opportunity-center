@@ -11732,12 +11732,27 @@ function renderDQ() {
   // evidence computed from it or from the live arrays, rather than restating a
   // conclusion from a previous build -- so a claim that has gone stale fails loudly.
   const M = REFRESH_META;
+  // Per-quote field gaps are collected separately from the synthesised findings.
+  // At this many quotes they run to a few hundred rows, and left inline they bury
+  // everything worth reading. Grouped by kind below, with the full list behind each.
+  const rowIssues = { noFUDate: [], noFUCode: [], noFURep: [], ownerMismatch: [] };
   QUOTES.forEach(q => {
-    if (!q.followUpDate) issues.push({sev:'high', text:`${q.quoteNo} (${q.customer}, ${fmt$(q.quoteTotal)}) has no Follow Up Date set at all.`});
-    if (q.followUpDate && !q.followUpCode) issues.push({sev:'med', text:`${q.quoteNo} (${q.customer}) has a Follow Up Date but no Follow Up Code set.`});
-    if (!q.followUpSalesperson) issues.push({sev:'med', text:`${q.quoteNo} (${q.customer}) has no Follow Up Salesperson assigned.`});
-    if (normalizeOwner(q.owner) !== q.bcSalesperson) issues.push({sev:'high', text:`${q.quoteNo} (${q.customer}) is owned by ${q.owner} on the account package, but BC's Salesperson Code is ${q.bcSalesperson} \u2014 worth confirming who's actually working this.`});
+    if (!q.followUpDate) rowIssues.noFUDate.push(q);
+    if (q.followUpDate && !q.followUpCode) rowIssues.noFUCode.push(q);
+    if (!q.followUpSalesperson) rowIssues.noFURep.push(q);
+    if (normalizeOwner(q.owner) !== q.bcSalesperson) rowIssues.ownerMismatch.push(q);
   });
+  const ROW_GROUPS = [
+    { key: 'noFUDate',      sev: 'high', title: 'No Follow Up Date set at all',
+      why: 'Nothing will resurface these quotes. They are invisible to any date-driven follow-up list, including this one.' },
+    { key: 'ownerMismatch', sev: 'high', title: 'Account-package owner \u2260 BC Salesperson Code',
+      why: 'The rep who owns the account is not the rep BC has on the quote. Not automatically wrong, but somebody has to confirm which is right.' },
+    { key: 'noFUCode',      sev: 'med',  title: 'Follow Up Date set, but no Follow Up Code',
+      why: 'The date says when; nothing says what kind of contact. Any reporting on follow-up type is empty for these.' },
+    { key: 'noFURep',       sev: 'med',  title: 'No Follow Up Salesperson assigned',
+      why: 'The follow-up has a date but no owner, so it belongs to nobody in particular.' },
+  ];
+  const rowIssueTotal = ROW_GROUPS.reduce((n,g) => n + rowIssues[g.key].length, 0);
   // Customer-number collisions in SalesModel -- previously logged as a couple of
   // one-off examples; this refresh established the real shape and the cause.
   issues.push({sev:'high', text:`<b>BIGGER THAN PREVIOUSLY LOGGED — re-measured this refresh.</b> Customer-number collisions in SalesModel's <code>d_SellToCustomer</code> are <b>systematic, not a couple of one-offs</b>. Evidence: pulling all ${ALL_ACCOUNTS.length} assigned accounts returned <b>${M.salesModelRows} rows for ${ALL_ACCOUNTS.length} distinct customer numbers — ${M.salesModelDupes} numbers resolve to two rows each</b>, and in every single case the split is <code>SourceCompany = 'IEONE'</code> (the live record) versus <code>SourceCompany = 'PE'</code> (a dormant legacy Pasternack shell). All ${M.salesModelDupes} are C-prefixed numbers; no L* or CIE* number collides. Worked example: <b>C132371</b> → "Epirus" [IEONE, ordered ${M.epirusDays} days ago] and "Environmental Dimensions Inc" [PE, last ordered 2017]. Same pattern on C129074 → "Anduril Industries" [IEONE, active] vs. "Hope College" [PE, 2017]. <b>Picking the wrong row turns an active account into a 9-year-lapsed one.</b> The fix now applied in this build: prefer <code>SourceCompany = 'IEONE'</code>, then the most recent LastOrderDate. <b>And don't fall back to name matching instead</b> — C193073 and C197030 both carry the name "Saronic Technologies" on their live rows, so the name is not unique either.`});
@@ -11836,7 +11851,26 @@ function renderDQ() {
     <div class="section-title">Data Quality</div>
     <div class="section-sub">Gaps found in the live pull &mdash; these get corrected in Business Central, not in this app. Findings marked <b>STILL TRUE</b> were re-verified against this refresh's data rather than carried over on faith; <b>NEW THIS REFRESH</b> means this pull surfaced it for the first time. Each one shows the evidence it rests on, so a stale claim fails loudly instead of quietly.</div>
     <div class="card">
-      ${issues.map(i => `<div class="dq-item"><span class="dq-sev" style="background:${i.sev==='high'?'var(--red)':'var(--yellow)'}">${i.sev.toUpperCase()}</span>${i.text}</div>`).join('') || '<div class="dq-item">No issues found in this snapshot.</div>'}
+      <b style="font-size:13px">Findings &mdash; read these first</b>
+      <div class="section-sub" style="margin-top:4px;margin-bottom:6px">Systemic issues affecting the whole dataset, or the way it has to be queried. Per-quote field gaps follow underneath.</div>
+      ${issues.map(i => `<div class="dq-item"><span class="dq-sev" style="background:${i.sev==='high'?'var(--red)':'var(--yellow)'}">${i.sev.toUpperCase()}</span>${i.text}</div>`).join('') || '<div class="dq-item">No systemic issues found in this snapshot.</div>'}
+    </div>
+    <div class="card">
+      <b style="font-size:13px">Per-quote field gaps &mdash; ${rowIssueTotal} across ${QUOTES.length} active quotes</b>
+      <div class="section-sub" style="margin-top:4px;margin-bottom:6px">Individual quotes missing a field. Grouped by kind, because the flat list runs to a few hundred rows and buries everything above it. Each group lists its quotes highest-value first; these get fixed in BC one quote at a time.</div>
+      ${ROW_GROUPS.map(g => {
+        const rows = rowIssues[g.key].slice().sort((a,b) => b.quoteTotal - a.quoteTotal);
+        if (!rows.length) return '';
+        const gval = rows.reduce((acc,q) => acc + q.quoteTotal, 0);
+        return `<div class="dq-item">
+          <span class="dq-sev" style="background:${g.sev==='high'?'var(--red)':'var(--yellow)'}">${g.sev.toUpperCase()}</span>
+          <b>${g.title} &mdash; ${rows.length} quote${rows.length===1?'':'s'}, ${fmt$(gval)}</b>
+          <div style="color:var(--text-muted);margin:4px 0 6px 0">${g.why}</div>
+          <div style="max-height:150px;overflow-y:auto;border:1px solid var(--border);border-radius:6px;padding:6px 8px;background:var(--cream);font-size:12px">
+            ${rows.map(q => `<div style="padding:2px 0"><b>${q.quoteNo}</b> &mdash; ${q.customer} &mdash; ${fmt$(q.quoteTotal)} &mdash; ${q.owner}${g.key==='ownerMismatch' ? ` <span style="color:var(--text-muted)">(BC says ${q.bcSalesperson || 'blank'})</span>` : ''}</div>`).join('')}
+          </div>
+        </div>`;
+      }).join('') || '<div class="dq-item">No per-quote field gaps in this snapshot.</div>'}
     </div>
     <div class="card">
       <b style="font-size:13px">Known unavailable fields (not invented)</b>
