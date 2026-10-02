@@ -40,7 +40,7 @@ Company instance: `azr-bc03.infinite.local`. Relevant entities and the exact fie
 | `salesHeader2` | `probabilityPercent`, `Applications`, `Timeframe`, `Industry`, `salesCompetition`, `manufacturingCompetition`, `projectName`, `closingDate`, `programAccount` | The Opportunity block. **"Describe the Opportunity" does NOT exist on this entity** — confirmed absent, don't invent it. |
 | `salesOrders` | `no`, `quoteNo`, `sellToCustomerNo`, `status`, `amount`, `orderDate`, `shipped` | `quoteNo` is a direct link back to the originating quote — **more reliable than the quote's own status for detecting a real conversion.** `shipped` (boolean) tells you if it's fulfilled yet. |
 | `invoices` | `no`, `quoteNo`, `orderNo`, `sellToCustomerNo`, `sellToCustomerName`, `documentDate`, `postingDate`, `responsibilityCenter`, `salespersonCode` | Also has a direct `quoteNo` field, independent of quote status. This is the **strongest signal** that a quote actually became real revenue. |
-| `postedSalesInvoices` | `no`, `amount`, `orderDate`, `documentDate` | Use to get dollar amounts for invoices found via the `invoices` entity's `quoteNo` field (the `invoices` entity itself doesn't expose a simple total `amount`). |
+| `postedSalesInvoices` | `no`, `amount`, `orderDate`, `documentDate` | Use to get dollar amounts for invoices found via the `invoices` entity's `quoteNo` field (the `invoices` entity itself doesn't expose a simple total `amount`). **⚠️ This entity renders a PDF document blob per returned row (~1.5s/row).** A 40-number chunk *times out* rather than erroring cleanly. **Chunk at ~10 invoice numbers per call**, and never try to price a large invoice population through it — bound the invoice set by `documentDate` first. (Confirmed the hard way on the 2026-10-02 refresh: an attempt to price 13,153 legacy invoices this way ran 20 minutes and returned nothing.) |
 | `salesInvoiceLine` | `documentNo`, `lineNo`, `no`, `description`, `quantity`, `unitPrice`, `lineAmount` | Only needed if you want line-level detail on Won/invoiced business. Not used for the legacy Won bulk pull (used header-level `postedSalesInvoices.amount` instead, for speed). |
 
 **Critical connector limitation:** every `getGenericEntity` query caps at **2,000 rows**, no `@odata.nextLink` pagination available. A broad, unfiltered pull will silently miss data older or "further down" than whatever the default sort returns. **Always filter by `responsibilityCenter eq 'LCOM'` at minimum, and prefer filtering directly by customer number (`sellToCustomerNo eq 'X' or sellToCustomerNo eq 'Y' ...`, chunked ~25–40 per call) or by `amount ge 5000` over a broad unfiltered pull.** This was the root cause of an entire rep's active pipeline being invisible in an earlier build pass — see Section 6.
@@ -52,7 +52,23 @@ GUID: `bce6ee25-e19f-4b95-acdd-01ed7d1e666a`. Used for:
 - `d_SellToCustomer`: `CustomerNumber`, `CustomerName`, `LastOrderDate`, `DaysSinceLastOrder`, `FirstOrderDate` — customer-level classification (Existing/Winback/New Business fallback).
 - `f_Transaction`: `Sell-ToCustomerKey` (join to `d_SellToCustomer[CustomerKey]`), `ItemKey` (join to `d_Item[ItemKey]`), `OrderDate` — used for item-level classification (which specific part, not just which customer).
 
-**Known bug, not yet resolved:** `SUMMARIZECOLUMNS` grouped by `f_Transaction[ItemKey]` while also trying to `CALCULATE(SELECTEDVALUE(d_Item[ItemNumber]))` in the same query returns `null` for every `ItemNumber` — the join breaks under that specific query shape. Item-level classification that works: `FILTER` + `RELATED()` inside a `SELECTCOLUMNS`, filtering explicitly by a list of item numbers (not grouping across many at once). This only scales to a few dozen items per query, not hundreds.
+**RESOLVED as of the 2026-10-02 refresh — item-level classification now scales.** The old failure was real but was a symptom of the wrong query shape, not a broken join: grouping by `f_Transaction[ItemKey]` while resolving `CALCULATE(SELECTEDVALUE(d_Item[ItemNumber]))` returns `null` for every `ItemNumber`. **Group on the dimension columns instead and aggregate the fact's own date column.** This shape works and is the one to use:
+
+```dax
+EVALUATE SUMMARIZECOLUMNS(
+  d_SellToCustomer[CustomerNumber],
+  d_Item[ItemNumber],
+  FILTER(VALUES(d_SellToCustomer[CustomerNumber]), d_SellToCustomer[CustomerNumber] = "L009635"),
+  FILTER(VALUES(d_Item[ItemNumber]), d_Item[ItemNumber] IN {"CSMN15MF-10","DPCAMM-2"}),
+  "LastOrder", CALCULATE(MAX(f_Transaction[OrderDate]))
+)
+```
+
+Two traps to avoid:
+- **Do NOT** use `MAX(d_OrderDate[CalendarDate])` as the measure. It ignores the fact table, so every row comes back with the date dimension's own maximum (`12/31/2028`) and you get a full customer × item cross join. The measure must read `f_Transaction[OrderDate]`.
+- Items with no purchase history for that customer are simply absent from the result — that's correct, record nothing for them.
+
+Run it one customer at a time with that customer's own item list; `ExecuteQuery` accepts 4 queries per call. 61 customers / 367 customer-item pairs completed in 16 calls.
 
 **Known data quality issue in SalesModel itself:** customer numbers are not always unique — e.g., `C132371` resolves to both "Epirus" (real, active) and an unrelated dormant record "Environmental Dimensions Inc" (last order 2017). **Always verify the customer name matches what's expected, don't trust the number alone.**
 
@@ -71,16 +87,27 @@ Source: uploaded `Pro_active_Sales_Accounts_Effective_July_2026.xlsx`. Columns: 
 4. **Pull lines** for each matched quote number via `salesQuoteLines?$filter=documentNo eq 'X' or ...` chunked ~25 quote numbers per call. Exclude blank-type/NCNR lines and Resource/FREIGHT lines from what's displayed (note the value gap on the quote instead of silently dropping it).
 5. **Classify each quote/line**: pull `d_SellToCustomer` for the matched customer numbers (customer-level fallback), and where feasible pull item-level history via SalesModel `f_Transaction` filtered to specific (customer, item) pairs found on the quotes. Classification rule: ≤365 days since last order = Existing Business; 366–730 days = Winback; no history or >730 days = New Business.
 6. **Pull Won quotes**: `salesQuotes?$filter=status eq 'Converted to Order'&$top=2000` (no customer filter — this table is small enough company-wide, ~720 rows, well under the cap), then cross-reference against the account list. Cross-check via `salesOrders?$filter=quoteNo eq '...'` and `invoices?$filter=quoteNo eq '...'` — both should agree with the status field for genuine wins. Track `orderExists`, `shipped`, `invoiced` per Won record for the funnel-stage display, not just a flat "Won" label.
-7. **Pull legacy pre-upgrade Won business**: `invoices?$filter=responsibilityCenter eq 'LCOM' and startswith(quoteNo,'SQ')&$select=no,quoteNo,orderNo,sellToCustomerNo,sellToCustomerName,documentDate,postingDate&$top=2000`, both `$orderby=documentDate asc` and `desc` to cover more of the date range (still capped at 2,000 each), filter client-side for `quoteNo` NOT starting with `SQIE` (the `not` filter doesn't work server-side, do it in code) and customer number in the account list. Get dollar amounts via `postedSalesInvoices?$filter=no eq 'X' or ...` chunked ~40 invoice numbers per call.
+7. **Pull legacy pre-upgrade Won business** — *method corrected on the 2026-10-02 refresh; the old `$orderby` asc/desc sweep below was silently truncating and is no longer recommended.* Filter by customer number **and** bound by date, one call per rep:
+   `invoices?$filter=(sellToCustomerNo eq 'X' or ...) and responsibilityCenter eq 'LCOM' and startswith(quoteNo,'SQ') and documentDate ge 2026-04-01&$select=no,quoteNo,orderNo,sellToCustomerNo,sellToCustomerName,documentDate,postingDate,salespersonCode&$top=2000`
+   Then filter client-side for `quoteNo` NOT starting with `SQIE` (`not` doesn't work server-side, do it in code) and de-duplicate by invoice `no`. Four calls returned 285 / 805 / 345 / 562 rows — comfortably under the cap — yielding **530** post-cutover legacy invoices.
+   Get dollar amounts via `postedSalesInvoices?$filter=no eq 'X' or ...` **chunked at ~10 invoice numbers per call** (see the ⚠️ note in §3a — 40 per call times out).
+   **Why bound the date:** without `documentDate ge 2026-04-01`, this same per-rep query returns **13,153** SQ-numbered invoices reaching back to **2023-01-03**. The old build's "272 invoices / $1,059,243.50" was not the real population — it was where the 2,000-row cap cut off, mistaken for the whole. The post-cutover window is the population that actually matters (legacy backlog still finishing), and it's the only one that can be priced in reasonable time.
 8. **Get total revenue for a fair comparison period** via SalesModel: `EVALUATE ROW("Total", CALCULATE([Net Sales $], FILTER(VALUES(d_SellToCustomer[CustomerNumber]), d_SellToCustomer[CustomerNumber] IN {...}), d_OrderDate[CalendarDate] >= DATE(year,month,day)))` — **always bound the date range to match the period the quote-numbering scheme you're comparing against has actually existed for.** Comparing Won-quote value against all-time revenue when the quote system is only a few months old is a real mistake made and corrected during this build — don't repeat it.
 
 ---
 
 ## 5. Real findings baked into this build (don't re-litigate, but do keep re-verifying as things change)
 
-- **Lost quotes are never formally closed.** Every $5,000+ quote checked with a `lostCode` set (DEMANDCHG, PRICING, NO BID, PROJ-LOST, etc. — over 100 checked) still shows `status = 'Quote Issued'` or `'Quote WIP'`. There is no reliable way to compute a Lost bucket from current BC data. This needs a **process fix** (reps/BC admin actually closing quotes), not a data fix. A separate one-page instructional doc for the team covers this.
-- **`status = 'Converted to Order'` means an order was created, not that it shipped or invoiced.** Cross-checking against `salesOrders.shipped` and `invoices.quoteNo` showed 2 of 3 confirmed Won quotes hadn't shipped yet. Track funnel stage (Order Created → Shipped/Invoiced), not a flat Won/Lost binary.
-- **BC was recently upgraded**, changing quote numbering from an old "SQ" prefix to the current "SQIE" prefix (same business, same accounts, ~April 2026 cutover). A large, ongoing volume of real revenue (**$1,059,243.50** confirmed since April 2026, still posting as of early August) is legacy pre-upgrade business finishing its lifecycle against old "SQ" quote numbers — this is why the current system's own Won total ($30,609.74) looks tiny in isolation. Keep these two populations visually distinct (Archive's "System" column: Current vs. Legacy) rather than merging them into one number.
+*Status of each finding as re-verified on the 2026-10-02 refresh is marked inline.*
+
+- **Lost quotes are never formally closed. ✅ STILL TRUE.** All **127** lost-coded quotes across the team's accounts (no dollar gate) still show `status` of `Quote Issued`, `Quote WIP` or `Pending Approval` — none closed. Confirmed cause: **there is no `Lost` or `Cancelled` status value in this BC instance at all.** Needs a **process fix** (reps/BC admin actually closing quotes), not a data fix.
+- **🆕 The `reasonCode` field is dead company-wide.** `salesQuotes?$filter=responsibilityCenter eq 'LCOM' and reasonCode ne ''` returns **zero rows** — no account filter, no dollar threshold. So every lost-coded quote has a blank Reason Code, and the reverse case is currently impossible anywhere in LCOM. `lostCode` is the only loss signal that exists.
+- **`status = 'Converted to Order'` means an order was created, not that it shipped or invoiced. ✅ STILL TRUE.** Of 6 Converted-to-Order quotes on these accounts, only 2 have `shipped = true`. Track funnel stage, not a flat Won/Lost binary.
+- **🆕 The order cross-check fails in BOTH directions — don't join on `salesOrders` alone.** 2 of those 6 Won quotes have **no row at all** in `salesOrders`, yet **do** have posted invoices: their orders completed and dropped out of the live entity. "No order row" is therefore ambiguous between "never ordered" and "already finished". Judge real conversion from `invoices.quoteNo`.
+- **🆕 The Won archive is structurally incomplete.** BC removes a quote from the live `salesQuotes` table once its order completes, so Won history leaks away over time — the company-wide `Converted to Order` count in LCOM is now only ~170 rows, versus ~720 at the previous refresh. Any win rate computed from the live table is **biased low**. Reading true Won history requires the archive entities (`salesQuoteArchives` / `salesHeaderArchives`), which this build still does not pull.
+- **BC was recently upgraded**, changing quote numbering from an old "SQ" prefix to the current "SQIE" prefix (same business, same accounts, ~April 2026 cutover). **⚠️ CORRECTED:** the previously recorded "$1,059,243.50 / 272 invoices since April 2026, still happening" was a **2,000-row truncation artifact read as a complete population**. The real figures: **13,153** SQ-numbered invoices for these accounts going back to **2023-01-03**, of which **530** are post-cutover backlog. Crucially the trend is a **steep decline** (Apr 274 → May 103 → Jun 70 → Jul 40 → Aug 20 → Sep 22 → Oct 1 invoices), so the earlier conclusion that this "isn't a one-time transition blip" **no longer holds** — the backlog is nearly cleared. Still keep the two populations visually distinct (Archive's "System" column).
+- **🆕 Volume-tier quotes inflate the pipeline total — flag, don't silently correct.** **18** of the 134 active quotes repeat the *same part* across several lines at an *identical unit price* with a *different quantity* each — a "price me these quantities" tier list where the customer buys one tier. BC's header `amount` sums them all. Worst case: `SQIE0029470` (Anduril) sums 5 tiers of one part to **$2,519,335** when the largest single tier is **$824,915**. Across all 18 this overstates the book by **$1,872,500** — ~25% of the reported $7.57M. The dashboard flags these with a "Volume tiers ×N" badge rather than adjusting the number; the rep confirms which tier is live.
+- **🆕 SalesModel customer-number collisions are widespread, not anecdotal.** **22 of the 133** assigned accounts return more than one `d_SellToCustomer` record for the same customer number, and in **19** of those the wrong pick flips the account's classification. Resolve by matching on customer *name* and preferring the most recent order date.
 - **The 2,000-row query cap is the single most dangerous failure mode in this build.** It silently drops data rather than erroring, and it looks identical to "there's genuinely nothing there." Always filter tightly (by account list, by status, by amount threshold) rather than pulling broadly and filtering client-side.
 
 ---
@@ -91,18 +118,29 @@ Source: uploaded `Pro_active_Sales_Accounts_Effective_July_2026.xlsx`. Columns: 
 QUOTES = [{
   quoteNo, customer, custNo, owner, bcSalesperson, status,
   followUpDate, followUpCode, followUpSalesperson, dueDate, expirationDate,
+  lostCode, reasonCode, // present on active quotes too -- BC never closes them, so they stay here
   quoteTotal, lastOrderDate, daysSinceLastOrder, classification, // customer-level classification, fallback
-  moreLinesValue, // $ gap between quoteTotal and sum of displayed lines (freight, excluded lines, truncation)
+  moreLinesValue,   // $ gap between quoteTotal and sum of displayed lines (freight, NCNR/comment lines)
+  tierCount, tierOverstated, // volume-tier detection; tierOverstated > 0 drives the "Volume tiers" flag
   lines: [{ lineNo, item, desc, qty, unitPrice, lineAmount, stock,
-            itemClassification, itemDaysSince, itemLastOrderDate }] // item-level classification where available
+            itemClassification, itemDaysSince, itemLastOrderDate,
+            itemLevel }] // true = real item history; false = customer-level fallback
 }]
 
 ARCHIVE = [{ ...same shape as QUOTES entries, plus: outcome:"Won", orderNo, orderExists, shipped, invoiced }]
 
-LEGACY_WON = [{ quoteNo, invoiceNo, customer, custNo, owner, amount, documentDate }] // no line detail, header-level only
+LEGACY_WON = [{ quoteNo, invoiceNo, customer, custNo, owner, amount, amountKnown, documentDate }] // header-level only
+
+LOST = [{ quoteNo, customer, custNo, owner, bcSalesperson, quoteTotal,
+          lostCode, reasonCode, status, codeMismatch,  // codeMismatch = exactly one of the two codes set
+          followUpDate, expirationDate, dueDate }]
 
 ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to compute zero-activity accounts
+
+DQ_EVIDENCE = { ... } // verified facts about the pull, so the Data Quality view shows evidence, not stored conclusions
 ```
+
+**Rep-edit preservation:** rep-entered Quote Type / Target Price / Comments live in `window.storage` under `qoc-line-edits-v1`, keyed `quoteNo|lineNo`. A refresh replaces the data arrays only; because the keys are stable and storage is never cleared, rep edits merge back onto fresh BC data automatically. Nothing in the refresh path writes to storage.
 
 ---
 
@@ -118,6 +156,9 @@ ALL_ACCOUNTS = [{ custNo, name, owner }] // full 133-account roster, used to com
 8. **Data Quality** — plain-language list of every real data problem found, with the debugging evidence, not just a symptom.
 9. **Archive** — Won records, Current + Legacy unified, date-range filterable, funnel-stage badges, drill-down (Current only — Legacy records don't have line-level detail pulled).
 10. **Roadmap** — what's built vs. genuinely still open.
+11. **Lost Quotes** — every quote carrying a `lostCode`, pulled per-rep with **no $5,000 gate**. Columns: quote number, customer, owner, quoteTotal, lostCode, reasonCode, status. Status will still read Quote Issued / Quote WIP / Pending Approval — that is the known BC limitation above, shown deliberately rather than hidden. Rows where exactly one of lostCode/reasonCode is populated are flagged and sorted first, then by quoteTotal descending. (Given `reasonCode` is unused company-wide, that is currently *every* row — which is the point.) Loss-reason codes and rep names render as clickable filter chips.
+
+**Interactive filters (My Quote Queue, Rep View, Manager View, Lost Quotes):** KPI tiles and inline flag badges are clickable filters — clicking filters the table to matching rows, clicking again toggles off. **One active filter at a time (v1)**, so selecting a different chip replaces the current one. While filtered, a `Showing: Overdue (12)` indicator appears with a clear (×) button.
 
 Every quote number and customer name in every table is clickable → opens a modal (quote detail with all lines + QUOTE/VALUE coaching questions generated from facts already on that quote, or customer detail listing all their quotes, with a back-link between the two).
 
@@ -131,9 +172,10 @@ Generated per-quote from data already present on that specific quote — **never
 
 ## 9. Still open / roadmap for whoever continues this
 
-- **Repeated No-Win** only sees the current active-quote snapshot. Needs a full historical quote log (not just currently-open quotes) to properly detect "quoted repeatedly, never won" patterns.
-- **Item-level classification** (the precise version, not the customer-level fallback) only covers the original ~28 quotes pulled early in this build. The SalesModel `ItemKey`/`ItemNumber` join bug (Section 3b) needs a real fix — likely filtering item lists in smaller batches — before extending it to the rest.
-- **Legacy Won pull only reaches back to ~April 2026.** Going further back needs more `$orderby`/pagination passes against the 2,000-row cap.
+- **Full Won history from the archive tables.** The single biggest remaining gap. The live `salesQuotes` table drops a quote once its order completes, so the Won archive only holds wins still lingering there and any win rate from it is biased low. Pulling `salesQuoteArchives` / `salesHeaderArchives` is the fix, and it also unblocks the item below.
+- **Repeated No-Win** only sees the current active-quote snapshot. Needs the full historical quote log (same archive-table pull as above) to properly detect "quoted repeatedly, never won" patterns.
+- ~~**Item-level classification** only covers the original ~28 quotes~~ — **DONE (2026-10-02).** The join bug is resolved (see §3b for the working query shape); item-level classification now covers 368 of 488 active quote lines across all four reps. The remaining 120 are parts with no purchase history for that customer, which correctly fall back to customer-level.
+- **Legacy Won pull is deliberately bounded to post-cutover invoicing (2026-04-01+).** Going further back is possible — the data reaches to 2023 — but pricing it is the blocker, not finding it: `postedSalesInvoices` renders a PDF per row (§3a) and cannot price 13k invoices in reasonable time. A bulk amount source would be needed.
 - **Real Lost tracking** is a process problem, not a tool problem — see the separate instructional doc and the leadership proposal doc for Craig/Joanna/Jonathan.
 - Nothing in this app writes back to BC. If that's ever wanted (e.g., a "close this quote" button), that's a meaningfully bigger scope change — confirm real business appetite for it before building.
 
@@ -141,4 +183,12 @@ Generated per-quote from data already present on that specific quote — **never
 
 ## 10. Prompt to hand to Claude to continue this
 
-> "Using the attached account list and the Business Central Explorer / PowerBI MCP connectors, refresh the Quote Opportunity Center dashboard following the exact data-pull methodology in Section 4 of this spec. Pull per-rep, not broadly, to avoid the 2,000-row cap silently dropping data. Preserve the existing app structure, styling, and views (Section 7) exactly — just refresh the embedded QUOTES/ARCHIVE/LEGACY_WON/ALL_ACCOUNTS arrays with current data, re-verify the findings in Section 5 still hold, and flag anything new the same way — plainly, in Data Quality, with the debugging evidence shown, not just the conclusion."
+> "Using the attached account list and the Business Central Explorer / PowerBI MCP connectors, refresh the Quote Opportunity Center dashboard following the exact data-pull methodology in Section 4 of this spec. Pull per-rep, not broadly, to avoid the 2,000-row cap silently dropping data. Preserve the existing app structure, styling, and views (Section 7) exactly — just refresh the embedded QUOTES/ARCHIVE/LEGACY_WON/LOST/ALL_ACCOUNTS arrays with current data, merge onto `window.storage` so rep-edited Quote Type / Target Price / Comments are never overwritten, re-verify the findings in Section 5 still hold, and flag anything new the same way — plainly, in Data Quality, with the debugging evidence shown, not just the conclusion."
+
+**Four traps that have each cost a full refresh cycle — read these before starting:**
+1. The **2,000-row cap is silent**. Filter by explicit customer number, one rep at a time, and *bound invoice pulls by date*. Check every response's row count; anything at or near 2,000 means truncation, not "that's all there is". Two separate figures in this spec were once wrong because a capped result was read as a complete population.
+2. **`postedSalesInvoices` renders a PDF per row.** Chunk at ~10, never 40. See §3a.
+3. **The SalesModel item-history query shape matters.** Group on dimension columns, aggregate `f_Transaction[OrderDate]`. See §3b for the working query and the two traps.
+4. **`not` filters are rejected** by this BC OData endpoint. Do exclusions client-side.
+
+**Verify before presenting.** The refresh is testable end-to-end in headless Chromium (Playwright is available): stub `window.storage`, load the file, assert every view renders without JS errors, assert the click-filters narrow the table and toggle off, and assert a rep-entered value survives a page reload. The 2026-10-02 refresh shipped with 45 such checks passing; re-run them rather than eyeballing the artifact.
